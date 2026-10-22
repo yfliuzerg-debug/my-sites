@@ -484,7 +484,7 @@ export function analyze(a: AnalyzeArgs) {
   };
 
   // 核销池
-  type Cell = { actual: number; neg: number; occDone: number; occOpen: number; fee: number; feeW: number };
+  type Cell = { actual: number; neg: number; occDone: number; occOpen: number; occCross: number; fee: number; feeW: number };
   type Pool = {
     id: string; code: string; name: string; cp: string; channel: string; bucket: string;
     skus: Map<string, Record<string, number>>; cells: Record<string, Cell>; stock: number; rate: Record<string, number | null>;
@@ -497,7 +497,7 @@ export function analyze(a: AnalyzeArgs) {
     if (!p) pools.set(id, (p = { id, code, name, cp, channel, bucket, skus: new Map(), cells: {}, stock: 0, rate: {}, plans: [] }));
     return p;
   };
-  const cellOf = (p: Pool, mm: string) => (p.cells[mm] ||= { actual: 0, neg: 0, occDone: 0, occOpen: 0, fee: 0, feeW: 0 });
+  const cellOf = (p: Pool, mm: string) => (p.cells[mm] ||= { actual: 0, neg: 0, occDone: 0, occOpen: 0, occCross: 0, fee: 0, feeW: 0 });
 
   // 库存按渠道分摊：同一客户×SKU 在各渠道的近期正出货占比
   const posRecent = (r: SORow) => [cur, addMonth(cur, -1), addMonth(cur, -2), addMonth(cur, -3)].reduce((s, mm) => s + Math.max(0, r.months[mm] || 0), 0);
@@ -509,6 +509,28 @@ export function analyze(a: AnalyzeArgs) {
     skuChannelCount.set(k, (skuChannelCount.get(k) || 0) + 1);
   }
 
+  // 换编码客户：同名下只有一个编码近两个月有出货时，把停用编码的历史并入现行编码（只用于"能做多少费用"，在途计划仍按计划编码核对）
+  const codeAlias = new Map<string, string>();
+  {
+    const act = new Map<string, number>();
+    const byName = new Map<string, Set<string>>();
+    for (const r of bi.so) {
+      act.set(r.code, (act.get(r.code) || 0) + Math.abs(r.months[cur] || 0) + Math.abs(r.months[addMonth(cur, -1)] || 0));
+      const k = norm(r.name);
+      if (!byName.has(k)) byName.set(k, new Set());
+      byName.get(k)!.add(r.code);
+    }
+    for (const codes of byName.values()) {
+      if (codes.size < 2) continue;
+      // 现行编码 = 近两个月出货（绝对值）占同名合计 ≥ 5% 的编码；只剩一个时其余视为停用
+      const tot = [...codes].reduce((x, c) => x + (act.get(c) || 0), 0);
+      const live = [...codes].filter((c) => (act.get(c) || 0) >= Math.max(1, tot * 0.05));
+      if (live.length !== 1) continue;
+      for (const c of codes) if (c !== live[0]) codeAlias.set(c, live[0]);
+    }
+  }
+  const capCode = (c: string) => codeAlias.get(c) || c;
+
   const monthsAll = [...new Set([...bi.months, cur, m1, m2])].sort();
   for (const cp of cps) {
     const info = cpInfo.get(cp.code);
@@ -517,7 +539,7 @@ export function analyze(a: AnalyzeArgs) {
       if (!info.skus.has(r.sku) || !clientOK(cp, r.name) || !channelMatches(cp.sub, r.channel)) continue;
       const m = bi.meta.get(r.sku)!;
       const bucket = mechKind(cp, m).kind;
-      const p = getPool(r.code, r.name, cp.code, r.channel, bucket);
+      const p = getPool(capCode(r.code), r.name, cp.code, r.channel, bucket);
       const vals: Record<string, number> = {};
       for (const mm of monthsAll) {
         const v = info.timedOut(m, r.channel, mm) ? 0 : (r.months[mm] || 0);
@@ -560,13 +582,13 @@ export function analyze(a: AnalyzeArgs) {
       const e = new Date(Math.min(pl.end.getTime(), monthEnd(mm).getTime()));
       const days = Math.round((e.getTime() - s.getTime()) / 864e5) + 1;
       const amt = pl.orderAmount * days / totalDays;
-      const cands = chans.map((c) => pools.get(`${pl.code}|${pl.cp}|${c}|${bucket}`)).filter(Boolean) as Pool[];
+      const cands = chans.map((c) => pools.get(`${capCode(pl.code)}|${pl.cp}|${c}|${bucket}`)).filter(Boolean) as Pool[];
       const parts: { pool: string; amount: number }[] = [];
       if (cp && info) {
         let targets = cands;
         if (!targets.length) {
           const ch = chans[0] || pl.channel || "未匹配渠道";
-          targets = [getPool(pl.code, pl.name, pl.cp, ch, bucket)];
+          targets = [getPool(capCode(pl.code), pl.name, pl.cp, ch, bucket)];
         }
         const weights = targets.map((p) => Math.max(0, p.cells[mm]?.actual || 0));
         const wsum = weights.reduce((x, y) => x + y, 0);
@@ -575,6 +597,7 @@ export function analyze(a: AnalyzeArgs) {
           if (!share) return;
           const c = cellOf(p, mm);
           if (pl.done) c.occDone += amt * share; else c.occOpen += amt * share;
+          if (!pl.done && ym(pl.end) > mm) c.occCross += amt * share;
           if (!p.plans.includes(pl.pl)) p.plans.push(pl.pl);
           parts.push({ pool: p.id, amount: amt * share });
         });
@@ -627,21 +650,27 @@ export function analyze(a: AnalyzeArgs) {
   for (const p of pools.values()) {
     const cp = cpBy.get(p.cp)!;
     const info = cpInfo.get(p.cp)!;
-    if (!(cp.balance >= a.minBalance && cp.isDiscount)) continue;
+    if (!cp.isDiscount || ym(cp.end) < cur) continue;
     const f = forecastOf(p);
     const inCP = (mm: string) => mm >= ym(cp.start) && mm <= ym(cp.end);
     const occ = (mm: string) => (p.cells[mm]?.occDone || 0) + (p.cells[mm]?.occOpen || 0);
     const months: Record<string, any> = {};
     const futureMonths = [cur, m1, m2];
+    // 跨月计划：本月出货不够的部分由下月出货接着覆盖（NBS 按整个计划期取数），只把这部分结转到下月扣减
+    let carryIn = scen.map(() => 0);
     for (const mm of futureMonths) {
       const rate = poolRate(p, mm);
       const so = scen.map((s) => (mm === cur ? f.mtd + f.remain * s.k : (mm === m1 ? f.m1 : f.m2) * s.k));
-      const rem = so.map((v) => v - occ(mm));
+      const rem = so.map((v, j) => v - occ(mm) - carryIn[j]);
+      const cross = p.cells[mm]?.occCross || 0;
+      const carryOut = rem.map((v) => (v < 0 ? Math.min(-v, cross) : 0));
       months[mm] = {
-        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), so, rem,
+        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), carryIn: [...carryIn], so, rem,
         fee: rem.map((v) => (inCP(mm) && rate != null ? Math.max(0, v) * rate : 0)),
-        gap: rem.map((v) => (v < 0 ? v : 0)),
+        gap: rem.map((v, j) => (v < 0 ? v + carryOut[j] : 0)),
+        carryOut,
       };
+      carryIn = carryOut;
     }
     const hist: any[] = [];
     for (const mm of monthsAll.filter((x) => x < cur && x >= ym(cp.start) && x <= ym(cp.end))) {
@@ -749,6 +778,7 @@ export function analyze(a: AnalyzeArgs) {
     const returnSkus = new Map<string, number>();
     const monthsList = Object.keys(P.amt).sort();
     let sharedWith = 0;
+    const perMonth: { mm: string; need: number; avail: number; fcst: number }[] = [];
     for (const mm of monthsList) {
       const S = series(P, P.scope, mm);
       let doneDeduct = 0, openW = P.amt[mm];
@@ -771,9 +801,9 @@ export function analyze(a: AnalyzeArgs) {
         const v = r.months[mm] || 0;
         if (v < 0) { returns += v * share; returnSkus.set(r.sku, (returnSkus.get(r.sku) || 0) + v * share); }
       }
-      if (mm === cur) fcst += fc.remain * share;
-      else if (mm === m1) fcst += fc.m1 * share;
-      else if (mm === m2) fcst += fc.m2 * share;
+      const mf = mm === cur ? fc.remain * share : mm === m1 ? fc.m1 * share : mm === m2 ? fc.m2 * share : 0;
+      fcst += mf;
+      perMonth.push({ mm, need: P.amt[mm], avail: (S - doneDeduct) * share, fcst: mf });
     }
     const pl = P.pl;
     const need = pl.orderAmount;
@@ -793,11 +823,11 @@ export function analyze(a: AnalyzeArgs) {
     else if (shortFinal > 0.5) level = "risk";
     else level = "follow";
     open.push({
-      pl: pl.pl, code: pl.code, name: pl.name, channel: pl.channel.replace(/&amp;/g, "&"), cp: pl.cp, cpDesc: P.cp.desc,
+      pl: pl.pl, code: pl.code, name: pl.name, channel: pl.channel.replace(/&amp;/g, "&"), cp: pl.cp, cpDesc: P.cp.desc, cpEnd: fmtD(P.cp.end),
       sku: pl.skus[0] || "", skuName: pl.skuNames[0] || "", start: fmtD(pl.start), end: fmtD(pl.end), remarkDates: pl.remarkDates,
       months: monthsList, need, gross, peerDone, avail, fcst: closed ? 0 : fcst, shortNow, shortFinal, returns, rate: pl.rate,
       budget: pl.budget, balance: pl.balance, verified, coveredFee, lossFee, level, closed, sharedWith,
-      scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans,
+      scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans, perMonth, deadline: fmtD(monthEnd(lastMonth)),
       returnSkus: [...returnSkus.entries()].sort((x, y) => x[1] - y[1]).slice(0, 8).map(([sku, v]) => ({ sku, name: bi.meta.get(sku)?.name || sku, v })),
       status: pl.status, remarks: pl.remarks,
     });
@@ -815,6 +845,7 @@ export function analyze(a: AnalyzeArgs) {
     if (info?.itemMiss && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：机制写了限定产品「${info.itemMiss}」，但在产品目录里没对上，暂按 CP 全部品牌计算。` });
     if (info?.unmatched.length && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：促销品牌「${info.unmatched.join("、")}」在 BI 产品目录找不到对应品牌，这部分产品未进入核销池。` });
   }
+  if (codeAlias.size) checks.push({ level: "info", text: `换编码客户：${[...codeAlias.entries()].map(([o, n]) => `${o}→${n}（${bi.so.find((r) => r.code === n)?.name.slice(0, 8) || ""}）`).join("、")}，旧编码历史已并入现行编码做预测；在途计划仍按计划上的编码核对。` });
   if (skippedRTD) checks.push({ level: "info", text: `TTS 中 ${skippedRTD} 条 RTD 在途计划未纳入（RTD 不在本工具范围）。` });
   if (missingCP.length) checks.push({ level: "warn", text: `${missingCP.length} 条在途计划的 CP 不在本次 CP 预算文件里，未做核销体检：${missingCP.slice(0, 6).join("、")}` });
   if (remarkNotes.length) checks.push({ level: "warn", text: `${remarkNotes.length} 条计划备注写了产品但未能识别成 SKU，按 CP 全范围计算：${remarkNotes.slice(0, 6).join("、")}` });
