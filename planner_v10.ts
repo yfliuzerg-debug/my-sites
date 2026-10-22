@@ -125,7 +125,7 @@ type Meta = {
 type SORow = { channel: string; code: string; name: string; sku: string; months: Record<string, number> };
 type CP = {
   code: string; start: Date; end: Date; desc: string; mech: string; bu: string; mg1: string[]; sub: string;
-  balance: number; type: string; isDiscount: boolean;
+  balance: number; type: string; isDiscount: boolean; broad: boolean; regional: boolean;
 };
 type Plan = {
   pl: string; code: string; name: string; channel: string; cp: string; mg1: string; skus: string[]; skuNames: string[];
@@ -290,6 +290,8 @@ function parseCP(wb: any): CP[] {
       code, start, end, desc: str(r, ix.desc), mech, bu: buKey(cell(r, ix.bu)), mg1: list(cell(r, ix.mg1)).map(norm),
       sub: str(r, ix.sub), balance: num(cell(r, ix.bal)), type,
       isDiscount: type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech),
+      // 自定义类 CP（MT TT、区域自主）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分
+      broad: /自定义/.test(type), regional: /区域自主/.test(str(r, ix.desc)),
     });
   }
   return out;
@@ -441,6 +443,8 @@ export function analyze(a: AnalyzeArgs) {
   const stockW = CONFIG.stockWeight(doneDays || 1);
   const warnings: string[] = [];
 
+  // 宽口径 CP：TTS 里有带折扣率的计划，就按折扣池计算
+  for (const c of cps) if (c.broad && plans.some((p) => p.cp === c.code && p.rate > 0 && !p.cancelled)) c.isDiscount = true;
   const cpBy = new Map(cps.map((c) => [c.code, c]));
   const ttsRateByCP = new Map<string, number | null>();
   for (const c of cps) {
@@ -459,6 +463,11 @@ export function analyze(a: AnalyzeArgs) {
     const sr = skuRate(m.sku, mm);
     const tr = ttsRateByCP.get(cp.code) ?? null;
     const isGpr = gprSet.has(norm(name)) && gprSeg.has(norm(m.s2));
+    if (cp.broad) {
+      // 宽口径 CP 机制里没有费率：按单品最高核销率（SKURate）计算
+      const g = sr ?? mk;
+      return g == null ? null : isGpr ? Math.max(0, g - 0.055) : g;
+    }
     if (isGpr) {
       const g = mk ?? sr;
       if (g != null) return Math.max(0, g - 0.055);
@@ -645,55 +654,6 @@ export function analyze(a: AnalyzeArgs) {
   };
   const forecastOf = (p: Pool) => forecastSeries((mm) => p.cells[mm]?.actual || 0, p.stock);
 
-  const scen = CONFIG.scenarios;
-  const poolOut: any[] = [];
-  for (const p of pools.values()) {
-    const cp = cpBy.get(p.cp)!;
-    const info = cpInfo.get(p.cp)!;
-    if (!cp.isDiscount || ym(cp.end) < cur) continue;
-    const f = forecastOf(p);
-    const inCP = (mm: string) => mm >= ym(cp.start) && mm <= ym(cp.end);
-    const occ = (mm: string) => (p.cells[mm]?.occDone || 0) + (p.cells[mm]?.occOpen || 0);
-    const months: Record<string, any> = {};
-    const futureMonths = [cur, m1, m2];
-    // 跨月计划：本月出货不够的部分由下月出货接着覆盖（NBS 按整个计划期取数），只把这部分结转到下月扣减
-    let carryIn = scen.map(() => 0);
-    for (const mm of futureMonths) {
-      const rate = poolRate(p, mm);
-      const so = scen.map((s) => (mm === cur ? f.mtd + f.remain * s.k : (mm === m1 ? f.m1 : f.m2) * s.k));
-      const rem = so.map((v, j) => v - occ(mm) - carryIn[j]);
-      const cross = p.cells[mm]?.occCross || 0;
-      const carryOut = rem.map((v) => (v < 0 ? Math.min(-v, cross) : 0));
-      months[mm] = {
-        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), carryIn: [...carryIn], so, rem,
-        fee: rem.map((v) => (inCP(mm) && rate != null ? Math.max(0, v) * rate : 0)),
-        gap: rem.map((v, j) => (v < 0 ? v + carryOut[j] : 0)),
-        carryOut,
-      };
-      carryIn = carryOut;
-    }
-    const hist: any[] = [];
-    for (const mm of monthsAll.filter((x) => x < cur && x >= ym(cp.start) && x <= ym(cp.end))) {
-      const rate = poolRate(p, mm);
-      const actual = p.cells[mm]?.actual || 0;
-      const rem = actual - occ(mm);
-      hist.push({ mm, actual, neg: p.cells[mm]?.neg || 0, occ: occ(mm), rem, rate, fee: rate != null ? Math.max(0, rem) * rate : null });
-    }
-    const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
-    const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
-    const recentMonths = [addMonth(cur, -3), addMonth(cur, -2), addMonth(cur, -1), cur];
-    const skuRows = [...p.skus.entries()].map(([sku, mv]) => {
-      const m = bi.meta.get(sku)!;
-      return { sku, name: m?.name || sku, s1: m?.s1 || "", s2: m?.s2 || "", brand: m?.brand || "", v: recentMonths.map((mm) => mv[mm] || 0) };
-    }).filter((r) => r.v.some((x) => Math.abs(x) >= 1)).sort((x, y) => Math.abs(y.v[3]) + Math.abs(y.v[2]) - Math.abs(x.v[3]) - Math.abs(x.v[2])).slice(0, 40);
-    poolOut.push({
-      id: p.id, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu,
-      channel: p.channel, bucket: BUCKET_LABEL[p.bucket] ?? p.bucket, scope: info.scopeLabel, timedNote: info.timedNote,
-      stock: p.stock, forecast: f, months, hist, quarter, nextQ, plans: p.plans, recentMonths, skuRows,
-      plannable: cp.balance >= a.minBalance && cp.isDiscount,
-    });
-  }
-
   // 在途计划核销体检：每条计划按"计划渠道 + 产品范围"取净出货；备注指定了产品时按备注范围，否则按 CP 全范围
   const soByCC = new Map<string, SORow[]>();
   for (const r of bi.so) {
@@ -739,6 +699,105 @@ export function analyze(a: AnalyzeArgs) {
     const arr = psByCode.get(pl.code);
     if (arr) arr.push(ps); else psByCode.set(pl.code, [ps]);
   }
+  // 区域自主 CP 墙：同客户×同渠道×同月×同 SKU 范围内，其他 CP 已做计划的费用要先扣掉
+  const psByCap = new Map<string, PS[]>();
+  for (const Q of psList) {
+    const k = capCode(Q.pl.code);
+    const arr = psByCap.get(k);
+    if (arr) arr.push(Q); else psByCap.set(k, [Q]);
+  }
+  const wallFee = (p: Pool, mm: string) => {
+    let w = 0;
+    const items: { pl: string; cp: string; fee: number }[] = [];
+    for (const Q of psByCap.get(p.code) || []) {
+      if (Q.cp.code === p.cp || !Q.chans.includes(p.channel) || Q.pl.rate <= 0) continue;
+      const qa = Q.amt[mm] || 0;
+      if (!qa) continue;
+      let ov = 0, tot = 0;
+      for (const ch of Q.chans) for (const r of soByCC.get(`${Q.pl.code}|${ch}`) || []) {
+        if (!Q.scope.has(r.sku)) continue;
+        const v = Math.max(0, r.months[mm] || 0);
+        tot += v;
+        if (ch === p.channel && p.skus.has(r.sku)) ov += v;
+      }
+      let frac: number;
+      if (tot > 0) frac = ov / tot;
+      else {
+        const n = [...Q.scope].filter((k) => p.skus.has(k)).length;
+        frac = Q.scope.size ? n / Q.scope.size / Math.max(1, Q.chans.length) : 0;
+      }
+      const fee = qa * Q.pl.rate * Math.min(1, Math.max(0, frac));
+      if (fee >= 1) { w += fee; items.push({ pl: Q.pl.pl, cp: Q.cp.code, fee }); }
+    }
+    return { w, items };
+  };
+
+  const scen = CONFIG.scenarios;
+  const poolOut: any[] = [];
+  for (const p of pools.values()) {
+    const cp = cpBy.get(p.cp)!;
+    const info = cpInfo.get(p.cp)!;
+    if (!cp.isDiscount || ym(cp.end) < cur) continue;
+    const f = forecastOf(p);
+    const inCP = (mm: string) => mm >= ym(cp.start) && mm <= ym(cp.end);
+    const occ = (mm: string) => (p.cells[mm]?.occDone || 0) + (p.cells[mm]?.occOpen || 0);
+    const months: Record<string, any> = {};
+    const futureMonths = [cur, m1, m2];
+    // 跨月计划：本月出货不够的部分由下月出货接着覆盖（NBS 按整个计划期取数），只把这部分结转到下月扣减
+    let carryIn = scen.map(() => 0);
+    for (const mm of futureMonths) {
+      const rate = poolRate(p, mm);
+      const so = scen.map((s) => (mm === cur ? f.mtd + f.remain * s.k : (mm === m1 ? f.m1 : f.m2) * s.k));
+      const rem = so.map((v, j) => v - occ(mm) - carryIn[j]);
+      const cross = p.cells[mm]?.occCross || 0;
+      const wall = cp.regional ? wallFee(p, mm) : { w: 0, items: [] as any[] };
+      const carryOut = rem.map((v) => (v < 0 ? Math.min(-v, cross) : 0));
+      months[mm] = {
+        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), carryIn: [...carryIn], so, rem,
+        fee: rem.map((v) => (inCP(mm) && rate != null ? Math.max(0, Math.max(0, v) * rate - wall.w) : 0)),
+        gap: rem.map((v, j) => (v < 0 ? v + carryOut[j] : 0)),
+        carryOut, wall: wall.w, wallItems: wall.items.sort((x, y) => y.fee - x.fee).slice(0, 6),
+      };
+      carryIn = carryOut;
+    }
+    const hist: any[] = [];
+    for (const mm of monthsAll.filter((x) => x < cur && x >= ym(cp.start) && x <= ym(cp.end))) {
+      const rate = poolRate(p, mm);
+      const actual = p.cells[mm]?.actual || 0;
+      const rem = actual - occ(mm);
+      hist.push({ mm, actual, neg: p.cells[mm]?.neg || 0, occ: occ(mm), rem, rate, fee: rate != null ? Math.max(0, rem) * rate : null });
+    }
+    const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
+    const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
+    const recentMonths = [addMonth(cur, -3), addMonth(cur, -2), addMonth(cur, -1), cur];
+    const skuRows = [...p.skus.entries()].map(([sku, mv]) => {
+      const m = bi.meta.get(sku)!;
+      return { sku, name: m?.name || sku, s1: m?.s1 || "", s2: m?.s2 || "", brand: m?.brand || "", v: recentMonths.map((mm) => mv[mm] || 0) };
+    }).filter((r) => r.v.some((x) => Math.abs(x) >= 1)).sort((x, y) => Math.abs(y.v[3]) + Math.abs(y.v[2]) - Math.abs(x.v[3]) - Math.abs(x.v[2])).slice(0, 40);
+    // 推荐产品组：按近 3 个完整月 + 本月净出货 × 费率（可做费用）高低排
+    const win = [addMonth(cur, -3), addMonth(cur, -2), addMonth(cur, -1), cur];
+    const grp = new Map<string, { group: string; so: number; fee: number; top: { sku: string; name: string; so: number } }>();
+    for (const [sku, mv] of p.skus) {
+      const m = bi.meta.get(sku);
+      if (!m) continue;
+      const so = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
+      const rt = rateFor(cp, m, p.name, cur) ?? poolRate(p, cur) ?? 0;
+      const g = m.s2 || m.s1 || m.brand || "其他";
+      const x = grp.get(g) || { group: g, so: 0, fee: 0, top: { sku, name: m.name, so: -Infinity } };
+      x.so += so;
+      x.fee += Math.max(0, so) * rt;
+      if (so > x.top.so) x.top = { sku, name: m.name, so };
+      grp.set(g, x);
+    }
+    const recommend = [...grp.values()].filter((x) => x.fee > 0).sort((x, y) => y.fee - x.fee).slice(0, 5);
+    poolOut.push({
+      id: p.id, broad: cp.broad, regional: cp.regional, recommend, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu,
+      channel: p.channel, bucket: BUCKET_LABEL[p.bucket] ?? p.bucket, scope: info.scopeLabel, timedNote: info.timedNote,
+      stock: p.stock, forecast: f, months, hist, quarter, nextQ, plans: p.plans, recentMonths, skuRows,
+      plannable: cp.balance >= a.minBalance && cp.isDiscount,
+    });
+  }
+
   // 每条计划：渠道内各 SKU 每月出货（缓存，避免重复扫描）
   const skuMonthCache = new Map<PS, Map<string, Record<string, number>>>();
   const skuMonths = (ps: PS) => {
@@ -828,6 +887,7 @@ export function analyze(a: AnalyzeArgs) {
       months: monthsList, need, gross, peerDone, avail, fcst: closed ? 0 : fcst, shortNow, shortFinal, returns, rate: pl.rate,
       budget: pl.budget, balance: pl.balance, verified, coveredFee, lossFee, level, closed, sharedWith,
       scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans, perMonth, deadline: fmtD(monthEnd(lastMonth)),
+      regional: P.cp.regional, broad: P.cp.broad, surplus: closed ? 0 : Math.max(0, expected - need),
       returnSkus: [...returnSkus.entries()].sort((x, y) => x[1] - y[1]).slice(0, 8).map(([sku, v]) => ({ sku, name: bi.meta.get(sku)?.name || sku, v })),
       status: pl.status, remarks: pl.remarks,
     });
@@ -845,6 +905,8 @@ export function analyze(a: AnalyzeArgs) {
     if (info?.itemMiss && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：机制写了限定产品「${info.itemMiss}」，但在产品目录里没对上，暂按 CP 全部品牌计算。` });
     if (info?.unmatched.length && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：促销品牌「${info.unmatched.join("、")}」在 BI 产品目录找不到对应品牌，这部分产品未进入核销池。` });
   }
+  const broadCPs = cps.filter((c) => c.broad && c.isDiscount && c.balance >= a.minBalance);
+  if (broadCPs.length) checks.push({ level: "info", text: `宽口径 CP（${broadCPs.map((c) => `${c.code} ${c.desc}`).join("、")}）：可兼做陈列/上市，网站只算折扣部分；费率按单品最高核销率（SKURate）。区域自主有 CP 墙：同客户×同渠道×同月×同 SKU 范围内先扣掉其他 CP 已做计划的费用；MT TT 按总部 CP，不扣其他 CP。` });
   if (codeAlias.size) checks.push({ level: "info", text: `换编码客户：${[...codeAlias.entries()].map(([o, n]) => `${o}→${n}（${bi.so.find((r) => r.code === n)?.name.slice(0, 8) || ""}）`).join("、")}，旧编码历史已并入现行编码做预测；在途计划仍按计划上的编码核对。` });
   if (skippedRTD) checks.push({ level: "info", text: `TTS 中 ${skippedRTD} 条 RTD 在途计划未纳入（RTD 不在本工具范围）。` });
   if (missingCP.length) checks.push({ level: "warn", text: `${missingCP.length} 条在途计划的 CP 不在本次 CP 预算文件里，未做核销体检：${missingCP.slice(0, 6).join("、")}` });
