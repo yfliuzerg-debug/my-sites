@@ -893,7 +893,13 @@ export function analyze(a: AnalyzeArgs) {
     const lastMonth = monthsList[monthsList.length - 1] || cur;
     const closed = lastMonth < cur;
     const shortNow = Math.max(0, need - avail);
-    const expected = avail + (closed ? 0 : fcst);
+    // "照现在速度"：本月已过 ≥7 天且计划含本月时，用本月每天实际出货 × 到截止剩余天数；否则用历史预计（2026-10-22 用户确认）
+    const daysToDeadline = Math.max(0, Math.round((monthEnd(lastMonth).getTime() - a.dataDate.getTime()) / 864e5));
+    const pmCur = perMonth.find((x) => x.mm === cur);
+    const usePace = !closed && !!pmCur && doneDays >= 7;
+    const paceDaily = pmCur && doneDays > 0 ? Math.max(0, pmCur.avail) / doneDays : 0;
+    const proj = closed ? 0 : usePace ? paceDaily * daysToDeadline : fcst;
+    const expected = avail + proj;
     const shortFinal = Math.max(0, need - expected);
     const verified = pl.started ? Math.max(0, pl.budget - pl.balance) : 0;
     const coveredFee = Math.min(pl.budget, Math.max(0, Math.min(need, expected)) * pl.rate);
@@ -908,7 +914,7 @@ export function analyze(a: AnalyzeArgs) {
     open.push({
       pl: pl.pl, code: pl.code, name: pl.name, channel: pl.channel.replace(/&amp;/g, "&"), cp: pl.cp, cpDesc: P.cp.desc, cpEnd: fmtD(P.cp.end),
       sku: pl.skus[0] || "", skuName: pl.skuNames[0] || "", start: fmtD(pl.start), end: fmtD(pl.end), remarkDates: pl.remarkDates,
-      months: monthsList, need, gross, peerDone, avail, fcst: closed ? 0 : fcst, shortNow, shortFinal, returns, rate: pl.rate,
+      months: monthsList, need, gross, peerDone, avail, fcst: proj, fcstHist: closed ? 0 : fcst, projBasis: usePace ? "pace" : "forecast", paceDaily, shortNow, shortFinal, returns, rate: pl.rate,
       budget: pl.budget, balance: pl.balance, verified, coveredFee, lossFee, level, closed, sharedWith,
       scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans, perMonth, deadline: fmtD(monthEnd(lastMonth)),
       regional: P.cp.regional, broad: P.cp.broad, surplus: closed ? 0 : Math.max(0, expected - need),
@@ -931,7 +937,7 @@ export function analyze(a: AnalyzeArgs) {
   }
   const broadCPs = cps.filter((c) => c.broad && c.isDiscount && c.balance >= a.minBalance);
   if (broadCPs.length) checks.push({ level: "info", text: `宽口径 CP（${broadCPs.map((c) => `${c.code} ${c.desc}`).join("、")}）：可兼做陈列/上市，网站只算折扣部分；费率按单品最高核销率（SKURate）。区域自主有 CP 墙：同客户×同渠道×同月×同 SKU 范围内先扣掉其他 CP 已做计划的费用；MT TT 按总部 CP，不扣其他 CP。` });
-  checks.push({ level: "info", text: "咖啡 SCD（零食渠道）特例：GPR 后整池费率锁 2%（1+2 与醇品/深黑共享一个核销池，以 CP 促销品牌为准）；7ct+2 不纳入核销池。其他渠道照常。" });
+  checks.push({ level: "info", text: "咖啡 SCD（零食渠道）特例：GPR 后整池费率锁 2%（1+2 与醇品/深黑共享一个核销池，以 CP 促销品牌为准）；7ct+2 不纳入核销池。其他渠道照常。同一批 SCD 出货按总部 CP 规则可被多个 CP 各自按 2% 使用（不设 CP 墙）。" });
   if (codeAlias.size) checks.push({ level: "info", text: `换编码客户：${[...codeAlias.entries()].map(([o, n]) => `${o}→${n}（${bi.so.find((r) => r.code === n)?.name.slice(0, 8) || ""}）`).join("、")}，旧编码历史已并入现行编码做预测；在途计划仍按计划上的编码核对。` });
   if (skippedRTD) checks.push({ level: "info", text: `TTS 中 ${skippedRTD} 条 RTD 在途计划未纳入（RTD 不在本工具范围）。` });
   if (missingCP.length) checks.push({ level: "warn", text: `${missingCP.length} 条在途计划的 CP 不在本次 CP 预算文件里，未做核销体检：${missingCP.slice(0, 6).join("、")}` });
