@@ -18,6 +18,8 @@ export const CONFIG = {
   ],
   seasonClamp: [0.7, 1.3] as [number, number],
   invFactorClamp: [0.7, 1.3] as [number, number], // 下月库存系数上下限（2026-10-22 用户确认）
+  // 咖啡 SCD（零食渠道）特例（2026-10-22 用户与刘芸确认）：GPR 后整池费率锁 2%；7ct+2 不准出货核销
+  scdCoffee: { channel: "scd", bu: "coffee", rateCap: 0.02, excludeS2: ["7ct+2"] },
   stockWeeks: 4, // 4 周库存 ≈ 1 个月正常销量
   stockWeight: (day: number) => (day <= 10 ? 0.1 : day <= 20 ? 0.2 : 0.3),
   targetBU: new Set(["dairy", "coffee", "confectionery"]),
@@ -459,7 +461,12 @@ export function analyze(a: AnalyzeArgs) {
     const v = [...new Set(bi.rates.filter((r) => r.sku === sku && r.start <= e && r.end >= s).map((r) => +r.rate.toFixed(6)))];
     return v.length === 1 ? v[0] : null;
   };
-  const rateFor = (cp: CP, m: Meta, name: string, mm: string) => {
+  const rateFor = (cp: CP, m: Meta, name: string, mm: string, channel = "") => {
+    const r0 = rateBase(cp, m, name, mm);
+    if (channel && isScdCoffee(cp.bu, channel)) return Math.min(r0 ?? CONFIG.scdCoffee.rateCap, CONFIG.scdCoffee.rateCap);
+    return r0;
+  };
+  const rateBase = (cp: CP, m: Meta, name: string, mm: string) => {
     const mk = mechKind(cp, m).rate;
     const sr = skuRate(m.sku, mm);
     const tr = ttsRateByCP.get(cp.code) ?? null;
@@ -492,19 +499,27 @@ export function analyze(a: AnalyzeArgs) {
     const r = CONFIG.clientRestrict[cp.code];
     return !r || r.some((k) => name.includes(k));
   };
+  const SC = CONFIG.scdCoffee;
+  const isScdCoffee = (bu: string, channel: string) => bu === SC.bu && norm(channel) === SC.channel;
+  // SCD 渠道不纳入核销池的咖啡产品（7ct+2）
+  const scdExcluded = (sku: string, channel: string) => {
+    const m = bi.meta.get(sku);
+    return !!m && isScdCoffee(m.bu, channel) && SC.excludeS2.some((x) => norm(x) === norm(m.s2));
+  };
 
   // 核销池
   type Cell = { actual: number; neg: number; occDone: number; occOpen: number; occCross: number; fee: number; feeW: number };
   type Pool = {
     id: string; code: string; name: string; cp: string; channel: string; bucket: string;
     skus: Map<string, Record<string, number>>; cells: Record<string, Cell>; stock: number; stockKnown: boolean; rate: Record<string, number | null>;
+    occFee: Record<string, number>; occPlans: Record<string, Set<string>>;
     plans: string[];
   };
   const pools = new Map<string, Pool>();
   const getPool = (code: string, name: string, cp: string, channel: string, bucket: string) => {
     const id = `${code}|${cp}|${channel}|${bucket}`;
     let p = pools.get(id);
-    if (!p) pools.set(id, (p = { id, code, name, cp, channel, bucket, skus: new Map(), cells: {}, stock: 0, stockKnown: false, rate: {}, plans: [] }));
+    if (!p) pools.set(id, (p = { id, code, name, cp, channel, bucket, skus: new Map(), cells: {}, stock: 0, stockKnown: false, rate: {}, plans: [], occFee: {}, occPlans: {} }));
     return p;
   };
   const cellOf = (p: Pool, mm: string) => (p.cells[mm] ||= { actual: 0, neg: 0, occDone: 0, occOpen: 0, occCross: 0, fee: 0, feeW: 0 });
@@ -548,7 +563,7 @@ export function analyze(a: AnalyzeArgs) {
     const info = cpInfo.get(cp.code);
     if (!info) continue;
     for (const r of bi.so) {
-      if (!info.skus.has(r.sku) || !clientOK(cp, r.name) || !channelMatches(cp.sub, r.channel)) continue;
+      if (!info.skus.has(r.sku) || !clientOK(cp, r.name) || !channelMatches(cp.sub, r.channel) || scdExcluded(r.sku, r.channel)) continue;
       const m = bi.meta.get(r.sku)!;
       const bucket = mechKind(cp, m).kind;
       const p = getPool(capCode(r.code), r.name, cp.code, r.channel, bucket);
@@ -560,7 +575,7 @@ export function analyze(a: AnalyzeArgs) {
         const c = cellOf(p, mm);
         c.actual += v;
         if (v < 0) c.neg += v;
-        const rt = rateFor(cp, m, r.name, mm);
+        const rt = rateFor(cp, m, r.name, mm, r.channel);
         if (rt != null) { const w = Math.max(Math.abs(v), 1); c.fee += rt * w; c.feeW += w; }
       }
       const prev = p.skus.get(r.sku) || {};
@@ -612,6 +627,8 @@ export function analyze(a: AnalyzeArgs) {
           if (pl.done) c.occDone += amt * share; else c.occOpen += amt * share;
           if (!pl.done && ym(pl.end) > mm) c.occCross += amt * share;
           if (!p.plans.includes(pl.pl)) p.plans.push(pl.pl);
+          p.occFee[mm] = (p.occFee[mm] || 0) + amt * share * pl.rate;
+          (p.occPlans[mm] ||= new Set()).add(pl.pl);
           parts.push({ pool: p.id, amount: amt * share });
         });
       }
@@ -632,7 +649,7 @@ export function analyze(a: AnalyzeArgs) {
     }
     const cp = cpBy.get(p.cp);
     if (!cp) return null;
-    const rs = [...p.skus.keys()].map((sku) => rateFor(cp, bi.meta.get(sku) || emptyMeta(sku), p.name, mm)).filter((v) => v != null) as number[];
+    const rs = [...p.skus.keys()].map((sku) => rateFor(cp, bi.meta.get(sku) || emptyMeta(sku), p.name, mm, p.channel)).filter((v) => v != null) as number[];
     return rs.length ? rs.reduce((x, y) => x + y, 0) / rs.length : null;
   };
 
@@ -722,7 +739,7 @@ export function analyze(a: AnalyzeArgs) {
       if (!qa) continue;
       let ov = 0, tot = 0;
       for (const ch of Q.chans) for (const r of soByCC.get(`${Q.pl.code}|${ch}`) || []) {
-        if (!Q.scope.has(r.sku)) continue;
+        if (!Q.scope.has(r.sku) || scdExcluded(r.sku, ch)) continue;
         const v = Math.max(0, r.months[mm] || 0);
         tot += v;
         if (ch === p.channel && p.skus.has(r.sku)) ov += v;
@@ -760,7 +777,7 @@ export function analyze(a: AnalyzeArgs) {
       const wall = cp.regional ? wallFee(p, mm) : { w: 0, items: [] as any[] };
       const carryOut = rem.map((v) => (v < 0 ? Math.min(-v, cross) : 0));
       months[mm] = {
-        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), carryIn: [...carryIn], so, rem,
+        inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), occFee: p.occFee[mm] || 0, occN: p.occPlans[mm]?.size || 0, carryIn: [...carryIn], so, rem,
         fee: rem.map((v) => (inCP(mm) && rate != null ? Math.max(0, Math.max(0, v) * rate - wall.w) : 0)),
         gap: rem.map((v, j) => (v < 0 ? v + carryOut[j] : 0)),
         carryOut, wall: wall.w, wallItems: wall.items.sort((x, y) => y.fee - x.fee).slice(0, 6),
@@ -788,7 +805,7 @@ export function analyze(a: AnalyzeArgs) {
       const m = bi.meta.get(sku);
       if (!m) continue;
       const so = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
-      const rt = rateFor(cp, m, p.name, cur) ?? poolRate(p, cur) ?? 0;
+      const rt = rateFor(cp, m, p.name, cur, p.channel) ?? poolRate(p, cur) ?? 0;
       const g = m.s2 || m.s1 || m.brand || "其他";
       const x = grp.get(g) || { group: g, so: 0, fee: 0, top: { sku, name: m.name, so: -Infinity } };
       x.so += so;
@@ -812,7 +829,7 @@ export function analyze(a: AnalyzeArgs) {
     if (c) return c;
     c = new Map();
     for (const ch of ps.chans) for (const r of soByCC.get(`${ps.pl.code}|${ch}`) || []) {
-      if (!ps.info.skus.has(r.sku) && !ps.scope.has(r.sku)) continue;
+      if ((!ps.info.skus.has(r.sku) && !ps.scope.has(r.sku)) || scdExcluded(r.sku, ch)) continue;
       const m = bi.meta.get(r.sku);
       const rec = c.get(r.sku) || {};
       for (const [mm, v] of Object.entries(r.months)) {
@@ -831,7 +848,7 @@ export function analyze(a: AnalyzeArgs) {
   };
   const scopeStock = (ps: PS) => {
     let v = 0;
-    for (const ch of ps.chans) for (const r of soByCC.get(`${ps.pl.code}|${ch}`) || []) if (ps.scope.has(r.sku)) v += stockShareOf(r);
+    for (const ch of ps.chans) for (const r of soByCC.get(`${ps.pl.code}|${ch}`) || []) if (ps.scope.has(r.sku) && !scdExcluded(r.sku, ch)) v += stockShareOf(r);
     return v;
   };
   const biCodes = new Set(bi.so.map((r) => r.code));
@@ -863,7 +880,7 @@ export function analyze(a: AnalyzeArgs) {
       peerDone += doneDeduct;
       avail += (S - doneDeduct) * share;
       for (const ch of P.chans) for (const r of soByCC.get(`${P.pl.code}|${ch}`) || []) {
-        if (!P.scope.has(r.sku)) continue;
+        if (!P.scope.has(r.sku) || scdExcluded(r.sku, ch)) continue;
         const v = r.months[mm] || 0;
         if (v < 0) { returns += v * share; returnSkus.set(r.sku, (returnSkus.get(r.sku) || 0) + v * share); }
       }
@@ -914,6 +931,7 @@ export function analyze(a: AnalyzeArgs) {
   }
   const broadCPs = cps.filter((c) => c.broad && c.isDiscount && c.balance >= a.minBalance);
   if (broadCPs.length) checks.push({ level: "info", text: `宽口径 CP（${broadCPs.map((c) => `${c.code} ${c.desc}`).join("、")}）：可兼做陈列/上市，网站只算折扣部分；费率按单品最高核销率（SKURate）。区域自主有 CP 墙：同客户×同渠道×同月×同 SKU 范围内先扣掉其他 CP 已做计划的费用；MT TT 按总部 CP，不扣其他 CP。` });
+  checks.push({ level: "info", text: "咖啡 SCD（零食渠道）特例：GPR 后整池费率锁 2%（1+2 与醇品/深黑共享一个核销池，以 CP 促销品牌为准）；7ct+2 不纳入核销池。其他渠道照常。" });
   if (codeAlias.size) checks.push({ level: "info", text: `换编码客户：${[...codeAlias.entries()].map(([o, n]) => `${o}→${n}（${bi.so.find((r) => r.code === n)?.name.slice(0, 8) || ""}）`).join("、")}，旧编码历史已并入现行编码做预测；在途计划仍按计划上的编码核对。` });
   if (skippedRTD) checks.push({ level: "info", text: `TTS 中 ${skippedRTD} 条 RTD 在途计划未纳入（RTD 不在本工具范围）。` });
   if (missingCP.length) checks.push({ level: "warn", text: `${missingCP.length} 条在途计划的 CP 不在本次 CP 预算文件里，未做核销体检：${missingCP.slice(0, 6).join("、")}` });
