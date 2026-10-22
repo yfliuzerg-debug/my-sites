@@ -17,6 +17,7 @@ export const CONFIG = {
     { key: "high", label: "乐观 120%", k: 1.2 },
   ],
   seasonClamp: [0.7, 1.3] as [number, number],
+  invFactorClamp: [0.7, 1.3] as [number, number], // 下月库存系数上下限（2026-10-22 用户确认）
   stockWeeks: 4, // 4 周库存 ≈ 1 个月正常销量
   stockWeight: (day: number) => (day <= 10 ? 0.1 : day <= 20 ? 0.2 : 0.3),
   targetBU: new Set(["dairy", "coffee", "confectionery"]),
@@ -496,14 +497,14 @@ export function analyze(a: AnalyzeArgs) {
   type Cell = { actual: number; neg: number; occDone: number; occOpen: number; occCross: number; fee: number; feeW: number };
   type Pool = {
     id: string; code: string; name: string; cp: string; channel: string; bucket: string;
-    skus: Map<string, Record<string, number>>; cells: Record<string, Cell>; stock: number; rate: Record<string, number | null>;
+    skus: Map<string, Record<string, number>>; cells: Record<string, Cell>; stock: number; stockKnown: boolean; rate: Record<string, number | null>;
     plans: string[];
   };
   const pools = new Map<string, Pool>();
   const getPool = (code: string, name: string, cp: string, channel: string, bucket: string) => {
     const id = `${code}|${cp}|${channel}|${bucket}`;
     let p = pools.get(id);
-    if (!p) pools.set(id, (p = { id, code, name, cp, channel, bucket, skus: new Map(), cells: {}, stock: 0, rate: {}, plans: [] }));
+    if (!p) pools.set(id, (p = { id, code, name, cp, channel, bucket, skus: new Map(), cells: {}, stock: 0, stockKnown: false, rate: {}, plans: [] }));
     return p;
   };
   const cellOf = (p: Pool, mm: string) => (p.cells[mm] ||= { actual: 0, neg: 0, occDone: 0, occOpen: 0, occCross: 0, fee: 0, feeW: 0 });
@@ -540,6 +541,8 @@ export function analyze(a: AnalyzeArgs) {
   }
   const capCode = (c: string) => codeAlias.get(c) || c;
 
+  // BI-Stock 里出现过的客户编码：没出现的视为库存数据缺失（下月库存系数回落 1.00），出现过但该池为 0 视为真实无库存
+  const stockCodes = new Set([...bi.stock.keys()].map((k) => k.split("|")[0]));
   const monthsAll = [...new Set([...bi.months, cur, m1, m2])].sort();
   for (const cp of cps) {
     const info = cpInfo.get(cp.code);
@@ -567,6 +570,7 @@ export function analyze(a: AnalyzeArgs) {
       const tot = skuChannelTotal.get(k) || 0;
       const share = tot > 0 ? posRecent(r) / tot : 1 / (skuChannelCount.get(k) || 1);
       p.stock += (bi.stock.get(k) || 0) * share;
+      if (stockCodes.has(r.code)) p.stockKnown = true;
     }
   }
 
@@ -633,7 +637,7 @@ export function analyze(a: AnalyzeArgs) {
   };
 
   // 预测：已发生不动；本月剩余 = 趋势(+库存)；下月/下下月 = 近3个完整月均值 × 季节系数
-  const forecastSeries = (A: (mm: string) => number, stock: number) => {
+  const forecastSeries = (A: (mm: string) => number, stock: number, stockKnown = true) => {
     const last3 = [addMonth(cur, -1), addMonth(cur, -2), addMonth(cur, -3)];
     const base = Math.max(0, last3.reduce((s, mm) => s + A(mm), 0) / 3);
     const lyAvg = last3.map((x) => A(addMonth(x, -12))).reduce((s, v) => s + v, 0) / 3;
@@ -643,6 +647,9 @@ export function analyze(a: AnalyzeArgs) {
       return 1;
     };
     const fut = (mm: string) => base * season(mm);
+    // 下月库存系数：库存周数 ÷ 4（4 周 ≈ 1 个月正常出货），限 0.7–1.3；只作用于下月，体现经销商承接能力
+    const weeks = base > 0 ? Math.max(0, stock) / base * 4 : null;
+    const invF = !stockKnown || weeks == null ? 1 : Math.min(CONFIG.invFactorClamp[1], Math.max(CONFIG.invFactorClamp[0], weeks / 4));
     const mtd = A(cur);
     let remain: number;
     if (doneDays > 0) {
@@ -650,9 +657,9 @@ export function analyze(a: AnalyzeArgs) {
       const inv = Math.max(0, stock) / CONFIG.stockWeeks * (remainDays / 7);
       remain = stock > 0 ? trend * (1 - stockW) + inv * stockW : trend;
     } else remain = fut(cur);
-    return { base, mtd, remain, m1: fut(m1), m2: fut(m2), s1: season(m1), s2: season(m2), last3: last3.map(A), ly: [A(addMonth(cur, -12)), A(addMonth(m1, -12)), A(addMonth(m2, -12))], stock };
+    return { base, mtd, remain, m1: fut(m1) * invF, m2: fut(m2), s1: season(m1), s2: season(m2), last3: last3.map(A), ly: [A(addMonth(cur, -12)), A(addMonth(m1, -12)), A(addMonth(m2, -12))], stock, weeks: stockKnown ? weeks : null, invF };
   };
-  const forecastOf = (p: Pool) => forecastSeries((mm) => p.cells[mm]?.actual || 0, p.stock);
+  const forecastOf = (p: Pool) => forecastSeries((mm) => p.cells[mm]?.actual || 0, p.stock, p.stockKnown);
 
   // 在途计划核销体检：每条计划按"计划渠道 + 产品范围"取净出货；备注指定了产品时按备注范围，否则按 CP 全范围
   const soByCC = new Map<string, SORow[]>();
@@ -832,7 +839,7 @@ export function analyze(a: AnalyzeArgs) {
   for (const P of psList) {
     if (P.pl.done) continue;
     const peers = (psByCode.get(P.pl.code) || []).filter((Q) => Q !== P && (Q.cp.code === P.cp.code || P.excl.includes(Q.pl.pl)) && Q.chans.some((c) => P.chans.includes(c)));
-    const fc = forecastSeries((mm) => series(P, P.scope, mm), scopeStock(P));
+    const fc = forecastSeries((mm) => series(P, P.scope, mm), scopeStock(P), stockCodes.has(P.pl.code));
     let avail = 0, fcst = 0, returns = 0, gross = 0, peerDone = 0;
     const returnSkus = new Map<string, number>();
     const monthsList = Object.keys(P.amt).sort();
@@ -918,7 +925,7 @@ export function analyze(a: AnalyzeArgs) {
   const noRate = poolOut.filter((p) => p.plannable && p.months[cur].rate == null && p.months[cur].so[1] > 0);
   if (noRate.length) checks.push({ level: "warn", text: `${noRate.length} 个核销池费率无法唯一确定（CP 机制有多个费率且无 TTS 先例），可做费用按 0 显示：${noRate.slice(0, 5).map((p) => `${p.name.slice(0, 6)}/${p.cp}`).join("、")}` });
   checks.push({ level: "info", text: "核销池口径：客户编码 × CP × BI 渠道；池内含 CP 机制允许的全部品牌/Segment 产品，正负出货一起算净额。同 CP 已有计划按计划进货金额扣占用（按活动天数分摊到月份）。不同 CP 之间不互相扣。" });
-  checks.push({ level: "info", text: "下月/下下月预测 = 近 3 个完整月净出货均值 × 季节系数（去年同月 ÷ 去年同期 3 个月均值，限制在 0.7–1.3）。三档系数只乘在尚未发生的部分。" });
+  checks.push({ level: "info", text: "下月/下下月预测 = 近 3 个完整月净出货均值 × 季节系数（去年同月 ÷ 去年同期 3 个月均值，限制在 0.7–1.3）；下月再乘库存系数（库存周数 ÷ 4，限制在 0.7–1.3，客户无库存数据时按 1.00）。三档系数只乘在尚未发生的部分。" });
 
   return {
     version: "v10", generatedAt: new Date().toISOString(), cur, m1, m2, qEnd, dataDate: fmtD(a.dataDate), doneDays, remainDays,
