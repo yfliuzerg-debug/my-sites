@@ -197,7 +197,8 @@ function closeAdvice(o){
 }
 function pace(o){ // 需日均 / 当前日均
   const n=daysLeft(o);const need=n>0?o.shortNow/n:o.shortNow;
-  const pm=(o.perMonth||[]).find(x=>x.mm===D.cur);const now=pm&&D.doneDays>0?Math.max(0,pm.avail)/D.doneDays:null;
+  // 现在每天：照现在速度，这条计划往后每天能分到的货（同活动里点数高的计划先分）
+  const pm=(o.perMonth||[]).find(x=>x.mm===D.cur);const now=o.projBasis==="pace"&&n>0?Math.max(0,o.fcst)/n:(pm&&D.doneDays>0?Math.max(0,pm.avail)/D.doneDays:null);
   return {n,need,now,x:now>0?need/now:null};
 }
 const FV={chase:{label:"还能追",lv:["risk","follow"]},lost:{label:"已过期",lv:["lost"]},ok:{label:"货已够",lv:["ok"]},nodata:{label:"没数据",lv:["nodata"]}};
@@ -315,7 +316,7 @@ function helpFlt(){return '<details class="help"><summary>这页怎么看？</su
  '<li><b>到期</b>：计划最后一个月的月底（财务按整月拉数）。<b>还剩几天</b>从 BI 数据日期算起。</li>'+
  '<li><b>照现在的速度</b>：本月每天实际出了多少，照这个速度一直出到到期日。本月刚过不到 7 天、或计划还没开始时，改用以前月份的平均来估。</li>'+
  '<li><b>跟不上</b>：照现在速度到期还不够，要催。<b>跟得上</b>：照现在速度能补上，别掉速就行。</li>'+
- '<li><b>每天要出 / 现在每天</b>：还差的货 ÷ 剩下天数，和现在每天实际出的比，<b>要快几倍</b>一眼看出。</li>'+
+ '<li><b>每天要出 / 现在每天</b>：还差的货 ÷ 剩下天数，和照现在速度这条计划每天能分到的货比（同活动里点数高的计划先分），<b>要快几倍</b>一眼看出。</li>'+
  '<li><b>建议提前退回</b>：到期前 15 天内还跟不上，而且这个活动还没结束、钱退回来还有客户能用，就建议 0 核销关掉，把钱转给别的客户；区域自主要等下次申请。</li>'+
  '<li><b>核不掉的钱可以转给谁</b>（在"已过期"里）：按活动汇总退回来的钱，列出同一个活动里本季度还能做的客户。</li></ul></details>'}
 // ───────── 数据说明 ─────────
