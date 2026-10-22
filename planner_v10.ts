@@ -136,7 +136,7 @@ type Plan = {
   orderAmount: number; rate: number; budget: number; balance: number; status: string; started: boolean;
   done: boolean; cancelled: boolean; productRemark: string; remarks: string; bu: string;
 };
-type RateRow = { sku: string; start: Date; end: Date; rate: number };
+type RateRow = { sku: string; start: Date; end: Date; rate: number; dddt: string; ws: boolean; created: number };
 
 // ───────────────────────── 解析 ─────────────────────────
 function emptyMeta(sku: string): Meta {
@@ -244,7 +244,10 @@ function parseBI(wb: any) {
         if (m) fill(m, { bu: buKey(cell(r, x["BUName"])), name: str(r, x["SKUName"]) }, str(r, x["MG1Name"]));
         const start = parseDate(cell(r, x["StartDate"])), end = parseDate(cell(r, x["EndDate"]));
         const rate = parseRate(cell(r, x["_RateValue"]) ?? cell(r, x["Rate"]));
-        if (start && end && rate > 0) rates.push({ sku, start, end, rate });
+        const rawRate = cell(r, x["_RateValue"]) ?? cell(r, x["Rate"]);
+        if (start && end && rawRate !== null && rawRate !== "" && rate >= 0) {
+          rates.push({ sku, start, end, rate, dddt: str(r, x["DDDT"]).toUpperCase(), ws: !!str(r, x["ISWS"]), created: num(cell(r, x["_CreateSerial"])) || (parseDate(cell(r, x["创建日期"]))?.getTime() || 0) });
+        }
       }
     }
   }
@@ -456,19 +459,30 @@ export function analyze(a: AnalyzeArgs) {
   }
   const gprSet = new Set(CONFIG.gpr55Customers.map(norm));
   const gprSeg = new Set(CONFIG.gpr55Segments.map(norm));
-  const skuRate = (sku: string, mm: string) => {
+  // SKU 折扣率上限（TTS"折扣率上限"表）：深圳 CG 是 DT 客户，只用 DT 行；批发渠道用"批发渠道"行，其他渠道用非批发行；同条件多行取最新创建的
+  const rateIdx = new Map<string, RateRow[]>();
+  for (const r of bi.rates) { const arr = rateIdx.get(r.sku); if (arr) arr.push(r); else rateIdx.set(r.sku, [r]); }
+  const skuRate = (sku: string, mm: string, channel = "") => {
     const s = monthStart(mm), e = monthEnd(mm);
-    const v = [...new Set(bi.rates.filter((r) => r.sku === sku && r.start <= e && r.end >= s).map((r) => +r.rate.toFixed(6)))];
-    return v.length === 1 ? v[0] : null;
+    let rows = (rateIdx.get(sku) || []).filter((r) => r.start <= e && r.end >= s);
+    if (!rows.length) return null;
+    const dt = rows.filter((r) => !r.dddt || r.dddt === "DT");
+    if (dt.length) rows = dt;
+    const isWs = norm(channel) === "ws";
+    const byCh = rows.filter((r) => (isWs ? r.ws : !r.ws));
+    if (byCh.length) rows = byCh;
+    const latest = Math.max(...rows.map((r) => r.created));
+    const top = rows.filter((r) => r.created === latest);
+    return Math.max(...top.map((r) => +r.rate.toFixed(6)));
   };
   const rateFor = (cp: CP, m: Meta, name: string, mm: string, channel = "") => {
-    const r0 = rateBase(cp, m, name, mm);
+    const r0 = rateBase(cp, m, name, mm, channel);
     if (channel && isScdCoffee(cp.bu, channel)) return Math.min(r0 ?? CONFIG.scdCoffee.rateCap, CONFIG.scdCoffee.rateCap);
     return r0;
   };
-  const rateBase = (cp: CP, m: Meta, name: string, mm: string) => {
+  const rateBase = (cp: CP, m: Meta, name: string, mm: string, channel = "") => {
     const mk = mechKind(cp, m).rate;
-    const sr = skuRate(m.sku, mm);
+    const sr = skuRate(m.sku, mm, channel);
     const tr = ttsRateByCP.get(cp.code) ?? null;
     const isGpr = gprSet.has(norm(name)) && gprSeg.has(norm(m.s2));
     if (cp.broad) {
@@ -852,75 +866,139 @@ export function analyze(a: AnalyzeArgs) {
     return v;
   };
   const biCodes = new Set(bi.so.map((r) => r.code));
-  const open: any[] = [];
+  // 核销包（2026-10-22 财务胡双确认）：同一客户编码 + 同一 CP 号下的几条计划，出货可以互相挪，看 CP 号不看点数；
+  // 审核销按计划点数核（不逐 SKU 卡上限）；实操先把货填进点数高的计划，货不够先放弃点数低的。CP 机制写明分产品点数的，计划范围本身已按产品分开。
+  const packs = new Map<string, PS[]>();
   for (const P of psList) {
-    if (P.pl.done) continue;
-    const peers = (psByCode.get(P.pl.code) || []).filter((Q) => Q !== P && (Q.cp.code === P.cp.code || P.excl.includes(Q.pl.pl)) && Q.chans.some((c) => P.chans.includes(c)));
-    const fc = forecastSeries((mm) => series(P, P.scope, mm), scopeStock(P), stockCodes.has(P.pl.code));
-    let avail = 0, fcst = 0, returns = 0, gross = 0, peerDone = 0;
-    const returnSkus = new Map<string, number>();
-    const monthsList = Object.keys(P.amt).sort();
-    let sharedWith = 0;
-    const perMonth: { mm: string; need: number; avail: number; fcst: number }[] = [];
-    for (const mm of monthsList) {
-      const S = series(P, P.scope, mm);
-      let doneDeduct = 0, openW = P.amt[mm];
-      for (const Q of peers) {
-        const qa = Q.amt[mm] || 0;
-        if (!qa) continue;
-        const ov = new Set([...P.scope].filter((k) => Q.scope.has(k)));
-        if (!ov.size) continue;
-        const den = series(Q, Q.scope, mm);
-        const frac = den > 0 ? Math.min(1, Math.max(0, series(Q, ov, mm) / den)) : ov.size / Q.scope.size;
-        if (Q.pl.done || P.excl.includes(Q.pl.pl)) doneDeduct += qa * frac;
-        else { openW += qa * frac; sharedWith++; }
-      }
-      const share = openW > 0 ? P.amt[mm] / openW : 1;
-      gross += S;
-      peerDone += doneDeduct;
-      avail += (S - doneDeduct) * share;
-      for (const ch of P.chans) for (const r of soByCC.get(`${P.pl.code}|${ch}`) || []) {
-        if (!P.scope.has(r.sku) || scdExcluded(r.sku, ch)) continue;
-        const v = r.months[mm] || 0;
-        if (v < 0) { returns += v * share; returnSkus.set(r.sku, (returnSkus.get(r.sku) || 0) + v * share); }
-      }
-      const mf = mm === cur ? fc.remain * share : mm === m1 ? fc.m1 * share : mm === m2 ? fc.m2 * share : 0;
-      fcst += mf;
-      perMonth.push({ mm, need: P.amt[mm], avail: (S - doneDeduct) * share, fcst: mf });
+    const k = `${P.pl.code}|${P.cp.code}`;
+    const arr = packs.get(k);
+    if (arr) arr.push(P); else packs.set(k, [P]);
+  }
+  const usePace = doneDays >= 7;
+  // 备注里写明"不得与某 PL 重复用数"的：先扣掉那条计划占用的货
+  const exclDeduct = (P: PS, mm: string) => {
+    let d = 0;
+    for (const Q of psByCode.get(P.pl.code) || []) {
+      if (Q === P || !P.excl.includes(Q.pl.pl) || !Q.chans.some((c) => P.chans.includes(c))) continue;
+      const qa = Q.amt[mm] || 0;
+      if (!qa) continue;
+      const ov = new Set([...P.scope].filter((k) => Q.scope.has(k)));
+      if (!ov.size) continue;
+      const den = series(Q, Q.scope, mm);
+      d += qa * (den > 0 ? Math.min(1, Math.max(0, series(Q, ov, mm) / den)) : ov.size / Q.scope.size);
     }
-    const pl = P.pl;
-    const need = pl.orderAmount;
-    const lastMonth = monthsList[monthsList.length - 1] || cur;
-    const closed = lastMonth < cur;
-    const shortNow = Math.max(0, need - avail);
-    // "照现在速度"：本月已过 ≥7 天且计划含本月时，用本月每天实际出货 × 到截止剩余天数；否则用历史预计（2026-10-22 用户确认）
-    const daysToDeadline = Math.max(0, Math.round((monthEnd(lastMonth).getTime() - a.dataDate.getTime()) / 864e5));
-    const pmCur = perMonth.find((x) => x.mm === cur);
-    const usePace = !closed && !!pmCur && doneDays >= 7;
-    const paceDaily = pmCur && doneDays > 0 ? Math.max(0, pmCur.avail) / doneDays : 0;
-    const proj = closed ? 0 : usePace ? paceDaily * daysToDeadline : fcst;
-    const expected = avail + proj;
-    const shortFinal = Math.max(0, need - expected);
-    const verified = pl.started ? Math.max(0, pl.budget - pl.balance) : 0;
-    const coveredFee = Math.min(pl.budget, Math.max(0, Math.min(need, expected)) * pl.rate);
-    // 已核销部分不会退回；剩余可核 = 预计可核 − 已核销
-    const lossFee = Math.max(0, (pl.budget - verified) - Math.max(0, coveredFee - verified));
-    let level: string;
-    if (!biCodes.has(pl.code)) level = "nodata";
-    else if (shortNow <= 0.5) level = "ok";
-    else if (closed) level = "lost";
-    else if (shortFinal > 0.5) level = "risk";
-    else level = "follow";
-    open.push({
-      pl: pl.pl, code: pl.code, name: pl.name, channel: pl.channel.replace(/&amp;/g, "&"), cp: pl.cp, cpDesc: P.cp.desc, cpEnd: fmtD(P.cp.end),
-      sku: pl.skus[0] || "", skuName: pl.skuNames[0] || "", start: fmtD(pl.start), end: fmtD(pl.end), remarkDates: pl.remarkDates,
-      months: monthsList, need, gross, peerDone, avail, fcst: proj, fcstHist: closed ? 0 : fcst, projBasis: usePace ? "pace" : "forecast", paceDaily, shortNow, shortFinal, returns, rate: pl.rate,
-      budget: pl.budget, balance: pl.balance, verified, coveredFee, lossFee, level, closed, sharedWith,
-      scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans, perMonth, deadline: fmtD(monthEnd(lastMonth)),
-      regional: P.cp.regional, broad: P.cp.broad, surplus: closed ? 0 : Math.max(0, expected - need),
-      returnSkus: [...returnSkus.entries()].sort((x, y) => x[1] - y[1]).slice(0, 8).map(([sku, v]) => ({ sku, name: bi.meta.get(sku)?.name || sku, v })),
-      status: pl.status, remarks: pl.remarks,
-    });
+    return d;
+  };
+  const open: any[] = [];
+  for (const pack of packs.values()) {
+    if (!pack.some((P) => !P.pl.done)) continue;
+    const code = pack[0].pl.code;
+    const info = pack[0].info;
+    const chans = [...new Set(pack.flatMap((P) => P.chans))];
+    const skus = new Set(pack.flatMap((P) => [...P.scope]));
+    const act = new Map<string, Record<string, number>>(); // 渠道|SKU → 每月出货
+    for (const ch of chans) for (const r of soByCC.get(`${code}|${ch}`) || []) {
+      if (!skus.has(r.sku) || scdExcluded(r.sku, ch)) continue;
+      const m = bi.meta.get(r.sku);
+      const k = `${ch}|${r.sku}`;
+      const rec = act.get(k) || {};
+      for (const [mm, v] of Object.entries(r.months)) {
+        if (m && info.timedOut(m, ch, mm)) continue;
+        rec[mm] = (rec[mm] || 0) + v;
+      }
+      act.set(k, rec);
+    }
+    // 本月起每个渠道|SKU 预计还能出的货："照现在速度"（本月已过 ≥7 天）或以前 3 个月平均
+    const projOf = (rec: Record<string, number>, mm: string) => {
+      if (mm < cur) return 0;
+      const days = mm === cur ? remainDays : daysIn(mm);
+      if (usePace) return Math.max(0, rec[cur] || 0) / doneDays * days;
+      const avg = Math.max(0, [1, 2, 3].reduce((x, i) => x + (rec[addMonth(cur, -i)] || 0), 0) / 3);
+      return avg * days / daysIn(mm);
+    };
+    const keysOf = new Map<PS, string[]>();
+    for (const P of pack) keysOf.set(P, [...act.keys()].filter((k) => { const i = k.indexOf("|"); return P.chans.includes(k.slice(0, i)) && P.scope.has(k.slice(i + 1)); }));
+    // 分货顺序：已核销完的计划先占；其余按点数从高到低，点数一样按计划要的货从大到小
+    const order = [...pack].sort((x, y) => (x.pl.done === y.pl.done ? 0 : x.pl.done ? -1 : 1) || y.pl.rate - x.pl.rate || y.pl.orderAmount - x.pl.orderAmount);
+    // 按整个计划期分货（财务按计划期整月拉数，跨月计划前一个月多出来的货可以用在后一个月）
+    const R = new Map<PS, { avail: Record<string, number>; exp: Record<string, number>; total: Record<string, number>; before: Record<string, number> }>();
+    for (const P of pack) R.set(P, { avail: {}, exp: {}, total: {}, before: {} });
+    for (const mode of ["avail", "exp"] as const) {
+      const rem = new Map<string, number>(); // 月|渠道|SKU → 剩余可用的货
+      const months = [...new Set(pack.flatMap((P) => Object.keys(P.amt)))];
+      for (const mm of months) for (const [k, rec] of act) rem.set(`${mm}|${k}`, (rec[mm] || 0) + (mode === "exp" ? projOf(rec, mm) : 0));
+      if (mode === "avail") for (const P of pack) for (const mm of Object.keys(P.amt)) R.get(P)!.total[mm] = keysOf.get(P)!.reduce((x, k) => x + rem.get(`${mm}|${k}`)!, 0);
+      for (const P of order) {
+        const pm = Object.keys(P.amt).filter((mm) => (P.amt[mm] || 0) > 0);
+        if (!pm.length) continue;
+        const need = pm.reduce((x, mm) => x + P.amt[mm], 0);
+        const ents = pm.flatMap((mm) => keysOf.get(P)!.map((k) => `${mm}|${k}`));
+        if (mode === "avail") for (const mm of pm) R.get(P)!.before[mm] = keysOf.get(P)!.reduce((x, k) => x + rem.get(`${mm}|${k}`)!, 0);
+        const pool = ents.reduce((x, e) => x + rem.get(e)!, 0);
+        const take = Math.max(0, Math.min(need, pool - pm.reduce((x, mm) => x + exclDeduct(P, mm), 0)));
+        const pos = ents.reduce((x, e) => x + Math.max(0, rem.get(e)!), 0);
+        const got: Record<string, number> = {};
+        if (pos > 0 && take > 0) for (const e of ents) {
+          const v = rem.get(e)!;
+          if (v <= 0) continue;
+          const t = take * v / pos;
+          rem.set(e, v - t);
+          const mm = e.slice(0, e.indexOf("|"));
+          got[mm] = (got[mm] || 0) + t;
+        }
+        for (const mm of pm) R.get(P)![mode][mm] = got[mm] || 0;
+      }
+    }
+    const openInPack = order.filter((P) => !P.pl.done);
+    for (const P of openInPack) {
+      const pl = P.pl;
+      const r = R.get(P)!;
+      const monthsList = Object.keys(P.amt).sort();
+      let avail = 0, expected = 0, gross = 0, usedByOthers = 0, returns = 0;
+      const returnSkus = new Map<string, number>();
+      const perMonth: { mm: string; need: number; avail: number; fcst: number }[] = [];
+      for (const mm of monthsList) {
+        const av = r.avail[mm] || 0, ex = Math.max(av, r.exp[mm] || 0);
+        avail += av; expected += ex;
+        gross += r.total[mm] || 0;
+        usedByOthers += Math.max(0, (r.total[mm] || 0) - (r.before[mm] ?? r.total[mm] ?? 0));
+        perMonth.push({ mm, need: P.amt[mm], avail: av, fcst: ex - av });
+        for (const k of keysOf.get(P)!) {
+          const v = act.get(k)![mm] || 0;
+          if (v < 0) { const sku = k.slice(k.indexOf("|") + 1); returns += v; returnSkus.set(sku, (returnSkus.get(sku) || 0) + v); }
+        }
+      }
+      const need = pl.orderAmount;
+      const lastMonth = monthsList[monthsList.length - 1] || cur;
+      const closed = lastMonth < cur;
+      if (closed) expected = avail;
+      const proj = expected - avail;
+      const shortNow = Math.max(0, need - avail);
+      const shortFinal = Math.max(0, need - expected);
+      const pmCur = perMonth.find((x) => x.mm === cur);
+      const paceDaily = pmCur && doneDays > 0 ? Math.max(0, pmCur.avail) / doneDays : 0;
+      const verified = pl.started ? Math.max(0, pl.budget - pl.balance) : 0;
+      const coveredFee = Math.min(pl.budget, Math.max(0, Math.min(need, expected)) * pl.rate);
+      // 已核销部分不会退回；剩余可核 = 预计可核 − 已核销
+      const lossFee = Math.max(0, (pl.budget - verified) - Math.max(0, coveredFee - verified));
+      let level: string;
+      if (!biCodes.has(pl.code)) level = "nodata";
+      else if (shortNow <= 0.5) level = "ok";
+      else if (closed) level = "lost";
+      else if (shortFinal > 0.5) level = "risk";
+      else level = "follow";
+      open.push({
+        pl: pl.pl, code: pl.code, name: pl.name, channel: pl.channel.replace(/&amp;/g, "&"), cp: pl.cp, cpDesc: P.cp.desc, cpEnd: fmtD(P.cp.end),
+        sku: pl.skus[0] || "", skuName: pl.skuNames[0] || "", start: fmtD(pl.start), end: fmtD(pl.end), remarkDates: pl.remarkDates,
+        months: monthsList, need, gross, peerDone: usedByOthers, avail, fcst: proj, projBasis: usePace ? "pace" : "forecast", paceDaily, shortNow, shortFinal, returns, rate: pl.rate,
+        budget: pl.budget, balance: pl.balance, verified, coveredFee, lossFee, level, closed,
+        packN: openInPack.length, packRank: openInPack.indexOf(P) + 1, packRates: openInPack.map((Q) => Q.pl.rate),
+        scopeNote: P.scopeNote, scopeSize: P.scope.size, chans: P.chans, perMonth, deadline: fmtD(monthEnd(lastMonth)),
+        regional: P.cp.regional, broad: P.cp.broad, surplus: closed ? 0 : Math.max(0, expected - need),
+        returnSkus: [...returnSkus.entries()].sort((x, y) => x[1] - y[1]).slice(0, 8).map(([sku, v]) => ({ sku, name: bi.meta.get(sku)?.name || sku, v })),
+        status: pl.status, remarks: pl.remarks,
+      });
+    }
   }
   const missingCP = planRows.filter((r: any) => !r.pl.done && !cpBy.get(r.pl.cp)).map((r: any) => `${r.pl.pl}(${r.pl.cp})`);
   const levelOrder = { lost: 0, risk: 1, follow: 2, ok: 3, nodata: 4 } as Record<string, number>;

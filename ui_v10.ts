@@ -237,7 +237,7 @@ function renderFlt(){
       (okv?'<th class="n">还能加做</th><th class="n">建议做</th>':'<th class="n">还差</th>'+(chase?'<th class="n hide-m">每天要出 / 现在每天</th>':'<th class="n hide-m">退货</th>')+'<th class="n">'+(chase?'照现在速度会少核':'核不掉')+'</th>')+'</tr></thead><tbody>';
     for(const o of os){
       const r=o.need>0?Math.max(0,Math.min(1,o.avail/o.need)):0;const pc=pace(o);const ad=chase?closeAdvice(o):null;
-      html+='<tr class="row" data-id="'+h(o.pl)+'">'+(chase?'<td><span class="chip '+LV[o.level][1]+'">'+LV[o.level][0]+'</span></td>':'')+'<td><div>'+h(o.cpDesc)+'</div><div class="sub">'+h(o.pl)+' · '+pct(o.rate)+'</div></td><td class="hide-m">'+h(o.channel)+'<div class="sub">'+o.start.slice(5)+' ~ '+o.end.slice(5)+(o.remarkDates?'（按备注日期）':'')+'</div></td>'+
+      html+='<tr class="row" data-id="'+h(o.pl)+'">'+(chase?'<td><span class="chip '+LV[o.level][1]+'">'+LV[o.level][0]+'</span></td>':'')+'<td><div>'+h(o.cpDesc)+'</div><div class="sub">'+h(o.pl)+' · '+pct(o.rate)+(o.packN>1?' · 同活动 '+o.packN+' 条，点数排第 '+o.packRank:'')+'</div></td><td class="hide-m">'+h(o.channel)+'<div class="sub">'+o.start.slice(5)+' ~ '+o.end.slice(5)+(o.remarkDates?'（按备注日期）':'')+'</div></td>'+
        (chase?'<td class="n"><b class="'+(pc.n<=7?'neg':'')+'">还剩 '+pc.n+' 天</b><div class="sub">'+o.deadline.slice(5)+' 截止</div></td>':'')+
        '<td class="n">'+money(o.need)+'</td><td class="n">'+money(o.avail)+'<div class="cov '+(r>=1?'':r>=0.8?'mid':'bad')+'"><i style="width:'+(r*100).toFixed(0)+'%"></i></div><div class="sub">'+(r*100).toFixed(0)+'%</div></td>';
       if(okv){
@@ -278,8 +278,9 @@ function fltDetail(o){
    '<tr><td>算哪些货</td><td>'+h(o.channel)+' 渠道（BI 里的 '+h(o.chans.join('+'))+'）· '+h(o.scopeNote)+' · 共 '+o.scopeSize+' 个产品</td></tr>'+
    '<tr><td>算哪几个月</td><td>'+o.months.map(mlabel).join('、')+' · '+o.deadline+' 截止</td></tr>'+
    '<tr><td>这些货已经出了（扣了退货）</td><td class="n">'+money(o.gross)+'</td></tr>'+
-   (o.peerDone?'<tr><td>减：已核销或备注排除的计划用掉的货</td><td class="n neg">− '+money(o.peerDone)+'</td></tr>':'')+
-   (o.sharedWith?'<tr><td>和同客户同活动的其他计划按金额分货</td><td class="n">'+o.sharedWith+' 处</td></tr>':'')+
+   (o.packN>1?'<tr><td>同活动的几条计划</td><td>共 '+o.packN+' 条（'+o.packRates.map(pct).join('、')+'），货可以互相挪，先给点数高的。这条排第 '+o.packRank+'</td></tr>':'')+
+   (o.peerDone?'<tr><td>减：点数更高的计划或已核销的计划先用掉的货</td><td class="n neg">− '+money(o.peerDone)+'</td></tr>':'')+
+   
    '<tr><td>算给这条计划的货</td><td class="n"><b>'+money(o.avail)+'</b></td></tr>'+
    (!o.closed?'<tr><td>到期前预计还能出</td><td class="n">'+money(o.fcst)+'<div class="sub">'+(o.projBasis==="pace"?'按本月每天 '+money(o.paceDaily)+' 的速度算':'按以前月份平均算')+'</div></td></tr>':'')+
    (o.perMonth&&o.perMonth.length>1?'<tr><td>每个月（计划要 / 已出）</td><td class="n">'+o.perMonth.map(x=>mlabel(x.mm)+' '+money(x.need)+' / '+money(x.avail)).join('<br>')+'</td></tr>':'')+
@@ -308,6 +309,7 @@ function helpCap(){return '<details class="help"><summary>这页怎么看？</su
  '<li><b>通用预算</b>（MT TT、区域自主）：也能做陈列、上市，这里只算折扣部分。<b>区域自主</b>不能和其他活动用同一批货，已经先扣掉。</li>'+
  '<li>咖啡零食渠道（SCD）：按 GPR 规定费率统一锁 2%；7+2 装不算。</li></ul></details>'}
 function helpFlt(){return '<details class="help"><summary>这页怎么看？</summary><ul>'+
+ '<li><b>同一个活动的几条计划</b>：货可以互相挪，核销同事会先把货填进点数最高的那条，货不够时先放弃点数低的。网站也按这个顺序分货，所以同一个活动的几条计划进度会不一样。</li>'+
  '<li><b>财务怎么核销</b>：按"同一个客户 + 同一个活动 + 同一个渠道 + 活动允许的所有产品"拉出整月出货，<b>退货会直接抵扣</b>。加起来够计划要的货才能全额核销，不够就按比例少核或被退单。</li>'+
  '<li><b>到期</b>：计划最后一个月的月底（财务按整月拉数）。<b>还剩几天</b>从 BI 数据日期算起。</li>'+
  '<li><b>照现在的速度</b>：本月每天实际出了多少，照这个速度一直出到到期日。本月刚过不到 7 天、或计划还没开始时，改用以前月份的平均来估。</li>'+
@@ -333,7 +335,7 @@ document.getElementById("exp").onclick=async()=>{
   const cap=D.pools.filter(p=>p.plannable&&match(p,poolText(p))).map(p=>{const o={"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"机制桶":p.bucket,"产品范围":p.scope,"费率":p.months[D.cur].rate,"CP余额":Math.round(p.cpBalance)};
     D.scenarios.forEach((s,j)=>{M.forEach(m=>o[mlabel(m)+"可做_"+s.label]=Math.round(feeOf(p,m,j)));o["本季度合计_"+s.label]=Math.round(rowQ(p,j))});
     o["建议分配_基准"]=allocMap(1).get(p.id)||0;o["推荐产品组"]=(p.recommend||[]).map(g=>g.group+"("+Math.round(g.fee)+")").join("、");M.forEach(m=>{o[mlabel(m)+"已排计划出货"]=Math.round(p.months[m].occ);o[mlabel(m)+"已扣其他CP"]=Math.round(p.months[m].wall||0)});o["近3月均值"]=Math.round(p.forecast.base);o["本月已发生"]=Math.round(p.forecast.mtd);return o});
-  const flt=D.open.filter(o=>match(o,planText(o))).map(o=>({"状态":LV[o.level][0],"客户":o.name,"客户编码":o.code,"PL":o.pl,"CP":o.cp,"活动":o.cpDesc,"渠道":o.channel,"开始":o.start,"结束":o.end,"备注日期":o.remarkDates?"是":"","费率":o.rate,"计划进货":Math.round(o.need),"池内净出货":Math.round(o.gross),"同池已核销扣减":Math.round(o.peerDone),"本计划可用净出货":Math.round(o.avail),"覆盖率":o.need?+(o.avail/o.need).toFixed(4):0,"还需出货":Math.round(o.shortNow),"截止":o.deadline,"剩余天数":o.closed?0:daysLeft(o),"按趋势到截止仍差":Math.round(o.shortFinal),"池内退货":Math.round(o.returns),"计划费用":Math.round(o.budget),"已核销":Math.round(o.verified),"预计少核":Math.round(o.lossFee),"建议":(closeAdvice(o)||{}).text||"","余量出货":Math.round(o.surplus||0),"取数范围":o.scopeNote,"计划备注":o.remarks}));
+  const flt=D.open.filter(o=>match(o,planText(o))).map(o=>({"状态":LV[o.level][0],"客户":o.name,"客户编码":o.code,"PL":o.pl,"CP":o.cp,"活动":o.cpDesc,"渠道":o.channel,"开始":o.start,"结束":o.end,"备注日期":o.remarkDates?"是":"","费率":o.rate,"计划进货":Math.round(o.need),"池内净出货":Math.round(o.gross),"被点数更高计划先用的货":Math.round(o.peerDone),"同活动计划数":o.packN||1,"点数排第":o.packRank||1,"本计划可用净出货":Math.round(o.avail),"覆盖率":o.need?+(o.avail/o.need).toFixed(4):0,"还需出货":Math.round(o.shortNow),"截止":o.deadline,"剩余天数":o.closed?0:daysLeft(o),"按趋势到截止仍差":Math.round(o.shortFinal),"池内退货":Math.round(o.returns),"计划费用":Math.round(o.budget),"已核销":Math.round(o.verified),"预计少核":Math.round(o.lossFee),"建议":(closeAdvice(o)||{}).text||"","余量出货":Math.round(o.surplus||0),"取数范围":o.scopeNote,"计划备注":o.remarks}));
   const ret=[];D.open.filter(o=>match(o,planText(o))).forEach(o=>o.returnSkus.forEach(r=>ret.push({"客户":o.name,"PL":o.pl,"活动":o.cpDesc,"渠道":o.channel,"SKU":r.sku,"产品":r.name,"退货净额":Math.round(r.v)})));
   const hist=[];D.pools.filter(p=>p.plannable&&match(p,poolText(p))).forEach(p=>p.hist.forEach(x=>hist.push({"客户":p.name,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"月份":x.mm,"净出货":Math.round(x.actual),"其中退货":Math.round(x.neg),"已排计划":Math.round(x.occ),"剩余":Math.round(x.rem),"可回溯费用":x.fee==null?null:Math.round(x.fee)})));
   const note=D.checks.map(c=>({"类型":c.level==="warn"?"注意":"说明","内容":c.text}));
