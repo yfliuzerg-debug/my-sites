@@ -772,6 +772,19 @@ export function analyze(a: AnalyzeArgs) {
 
   const scen = CONFIG.scenarios;
   const poolOut: any[] = [];
+  // 产品字典（页面按 Brand/S1/S2/S3/SKU 逐级筛选用，只传一次）：[SKU, 名称, Brand, S1, S2, S3]
+  const prodIdx = new Map<string, number>();
+  const prodMeta: string[][] = [];
+  const pid = (sku: string) => {
+    let i = prodIdx.get(sku);
+    if (i == null) {
+      const m = bi.meta.get(sku);
+      i = prodMeta.length;
+      prodIdx.set(sku, i);
+      prodMeta.push([sku, m?.name || sku, m?.brand || "", m?.s1 || "", m?.s2 || "", m?.s3 || ""]);
+    }
+    return i;
+  };
   for (const p of pools.values()) {
     const cp = cpBy.get(p.cp)!;
     const info = cpInfo.get(p.cp)!;
@@ -807,6 +820,15 @@ export function analyze(a: AnalyzeArgs) {
     }
     const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
     const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
+    const plannable = cp.balance >= a.minBalance && cp.isDiscount;
+    if (!plannable) {
+      // 预算不够的活动只在"核不掉的钱转给谁"里用到：只传每月能做费用
+      poolOut.push({
+        id: p.id, lite: true, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu, channel: p.channel,
+        months: Object.fromEntries(futureMonths.map((mm) => [mm, { inCP: months[mm].inCP, fee: months[mm].fee }])), plannable: false,
+      });
+      continue;
+    }
     const recentMonths = [addMonth(cur, -3), addMonth(cur, -2), addMonth(cur, -1), cur];
     const skuRows = [...p.skus.entries()].map(([sku, mv]) => {
       const m = bi.meta.get(sku)!;
@@ -828,11 +850,21 @@ export function analyze(a: AnalyzeArgs) {
       grp.set(g, x);
     }
     const recommend = [...grp.values()].filter((x) => x.fee > 0).sort((x, y) => y.fee - x.fee).slice(0, 5);
+    // 每个 SKU：[产品字典序号, 近 4 个月净出货, 费率]，用于按产品筛选时算"这个产品占这个池能做费用的比例"
+    const px: number[][] = [];
+    for (const [sku, mv] of p.skus) {
+      const m = bi.meta.get(sku);
+      const so = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
+      if (Math.abs(so) < 1) continue;
+      const rt = (m ? rateFor(cp, m, p.name, cur, p.channel) : null) ?? poolRate(p, cur) ?? 0;
+      px.push([pid(sku), so, rt]);
+    }
+    const sr = skuRows.map((r) => [pid(r.sku), ...r.v]);
     poolOut.push({
       id: p.id, broad: cp.broad, regional: cp.regional, recommend, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu,
       channel: p.channel, bucket: BUCKET_LABEL[p.bucket] ?? p.bucket, scope: info.scopeLabel, timedNote: info.timedNote,
-      stock: p.stock, forecast: f, months, hist, quarter, nextQ, plans: p.plans, recentMonths, skuRows,
-      plannable: cp.balance >= a.minBalance && cp.isDiscount,
+      stock: p.stock, forecast: f, months, hist, quarter, nextQ, recentMonths, sr, px,
+      plannable,
     });
   }
 
@@ -1032,7 +1064,7 @@ export function analyze(a: AnalyzeArgs) {
   return {
     version: "v10", generatedAt: new Date().toISOString(), cur, m1, m2, qEnd, dataDate: fmtD(a.dataDate), doneDays, remainDays,
     scenarios: scen.map((s) => ({ key: s.key, label: s.label, k: s.k })), minBalance: a.minBalance,
-    pools: poolOut, open, checks,
+    pools: poolOut, open, checks, prod: prodMeta,
     files: { soRows: bi.so.length, plans: plans.length, cps: cps.length, months: bi.months },
   };
 }

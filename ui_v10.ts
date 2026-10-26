@@ -75,7 +75,8 @@ ${message ? `<div class="chip risk" style="margin-top:10px">${esc(message)}</div
 }
 
 export function resultPage(data: unknown) {
-  const json = JSON.stringify(data).replace(/</g, "\\u003c").replace(new RegExp("\\u2028", "g"), "\\u2028").replace(new RegExp("\\u2029", "g"), "\\u2029");
+  // 数字取整（费率等小数保留 4 位），页面体积约减半
+  const json = JSON.stringify(data, (_k, v) => (typeof v === "number" && Number.isFinite(v) ? (Math.abs(v) >= 10 ? Math.round(v) : Math.round(v * 10000) / 10000) : v)).replace(/</g, "\\u003c").replace(new RegExp("\\u2028", "g"), "\\u2028").replace(new RegExp("\\u2029", "g"), "\\u2029");
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>费用规划助手 · 结果</title><style>${CSS}</style></head><body>
 <div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta" id="meta"></span><span class="sp"></span>
 <button class="btn" id="exp">导出 Excel</button><a class="btn" href="/workspace">重新上传</a><a class="btn" href="/legacy">旧版</a></div></div>
@@ -93,7 +94,9 @@ export function resultPage(data: unknown) {
 <div class="toast" id="toast"></div>
 <script>
 const D=${json};
-const S={cust:"",bu:"",q:"",sc:1,tab:"cap",fv:"chase",thr:500,open:new Set()};
+const S={cust:"",bu:"",q:"",sc:1,tab:"cap",fv:"chase",thr:500,open:new Set(),pf:{brand:"",s1:"",s2:"",s3:"",sku:""}};
+const PM=D.prod||[];// [SKU,名称,Brand,S1,S2,S3]
+D.pools.forEach(p=>{p.skuRows=(p.sr||[]).map(a=>({sku:PM[a[0]][0],name:PM[a[0]][1],brand:PM[a[0]][2],s1:PM[a[0]][3],s2:PM[a[0]][4],v:a.slice(1)}));p.px=p.px||[]});
 const fmt=new Intl.NumberFormat("zh-CN",{maximumFractionDigits:0});
 const money=v=>{const r=Math.round(Number(v)||0);return fmt.format(r===0?0:r)};
 const wan=v=>{v=Number(v)||0;return Math.abs(v)>=10000?(v/10000).toFixed(1)+"万":money(v)};
@@ -127,42 +130,59 @@ const short=n=>String(n||'').replace(/有限(责任)?公司$/,'').replace(/^(深
 // 同一 CP 的余额在全部客户之间共用：合计时按 CP 封顶
 function capped(ps,i){const by=new Map();ps.forEach(p=>{const x=by.get(p.cp)||{v:0,b:p.cpBalance};x.v+=rowQ(p,i);by.set(p.cp,x)});let t=0;by.forEach(x=>t+=Math.min(x.v,Math.max(0,x.b)));return t}
 
+// ───────── 按产品逐级筛选（Brand → S1 → S2 → S3 → SKU） ─────────
+const PL=[["brand","Brand",2],["s1","S1",3],["s2","S2",4],["s3","S3",5],["sku","SKU",0]];
+function pfOn(){return PL.some(([k])=>S.pf[k])}
+function pfHit(i,upto){const m=PM[i];for(const [k,,c] of PL){if(upto&&k===upto)break;if(S.pf[k]&&m[c]!==S.pf[k])return false}return true}
+// 选中产品占这个池能做费用的比例 = 选中 SKU 的（近 4 个月净出货 × 费率）÷ 全池同口径合计
+function share(p){if(!pfOn())return 1;let a=0,t=0;for(const [i,so,rt] of p.px){const v=Math.max(0,so)*rt;t+=v;if(pfHit(i))a+=v}return t>0?a/t:0}
+function pfBar(cands){
+  const opts=k=>{const c=PL.find(x=>x[0]===k)[2];const m=new Map();cands.forEach(p=>p.px.forEach(([i])=>{if(!pfHit(i,k))return;const key=PM[i][c];if(!key)return;m.set(key,k==="sku"?PM[i][0]+' '+PM[i][1]:key)}));return [...m.entries()].sort((a,b)=>a[1].localeCompare(b[1],"zh-CN"))};
+  return '<div class="bar pfbar"><span class="sub">按产品看：</span>'+PL.map(([k,lab])=>'<select data-pf="'+k+'" style="max-width:'+(k==="sku"?260:170)+'px"><option value="">'+lab+'（全部）</option>'+opts(k).map(([v,t])=>'<option value="'+h(v)+'"'+(S.pf[k]===v?' selected':'')+'>'+h(t)+'</option>').join("")+'</select>').join("")+(pfOn()?'<button class="btn" id="pfClr">清除</button><span class="sub">只算选中产品能做的部分</span>':'')+'</div>';
+}
 // ───────── 能做多少费用 ─────────
 function renderCap(){
   const el=document.getElementById("v-cap");const i=S.sc;
-  let rows=D.pools.filter(p=>p.plannable&&match(p,poolText(p)));
+  const cands=D.pools.filter(p=>p.plannable&&match(p,poolText(p)));
+  const SH=new Map(cands.map(p=>[p.id,share(p)]));const sh=p=>SH.has(p.id)?SH.get(p.id):share(p);
+  const rq=(p,j)=>rowQ(p,j)*sh(p),rn=(p,j)=>rowN(p,j)*sh(p),fo=(p,m,j)=>feeOf(p,m,j)*sh(p);
+  let rows=cands.filter(p=>!pfOn()||sh(p)>0);
   const all=rows.length;
-  rows=rows.filter(p=>rowQ(p,1)+rowN(p,1)>=S.thr||p.months[D.cur].gap[1]<-0.5);
+  rows=rows.filter(p=>rq(p,1)+rn(p,1)>=S.thr||(!pfOn()&&p.months[D.cur].gap[1]<-0.5));
   const sum=k=>rows.reduce((s,p)=>s+k(p),0);
-  const AL=[0,1,2].map(j=>allocMap(j));const al=AL[i];
-  const k3=[0,1,2].map(j=>rows.reduce((s,p)=>s+(AL[j].get(p.id)||0),0)), raw3=[0,1,2].map(j=>sum(p=>rowQ(p,j)));
-  const over=rows.filter(p=>p.months[D.cur].gap[1]<-0.5);
-  let html=helpCap()+'<div class="kpis">'+
+  const AL=[0,1,2].map(j=>allocMap(j));
+  // 选了产品时，建议做 = 不超过这个产品能做的部分
+  const alj=(p,j)=>pfOn()?Math.min(AL[j].get(p.id)||0,Math.floor(rq(p,j)/100)*100):(AL[j].get(p.id)||0);const AP=new Map(rows.map(p=>[p.id,p]));const al={get:id=>AP.has(id)?alj(AP.get(id),i):0};
+  const k3=[0,1,2].map(j=>rows.reduce((s,p)=>s+alj(p,j),0)), raw3=[0,1,2].map(j=>sum(p=>rq(p,j)));
+  const over=pfOn()?[]:rows.filter(p=>p.months[D.cur].gap[1]<-0.5);
+  let html=helpCap()+pfBar(cands)+'<div class="kpis">'+
    '<div class="kpi"><div class="l">本季度建议做的费用</div><div class="v">'+wan(k3[i])+'</div><div class="s">剩余预算能用掉的部分 · 保守 '+wan(k3[0])+' / 乐观 '+wan(k3[2])+'</div></div>'+
    '<div class="kpi"><div class="l">按出货算，本季度最多能做</div><div class="v">'+wan(raw3[i])+'</div><div class="s">比预算多出来的，要找 CDT 加预算</div></div>'+
-   [D.cur,D.m1,D.m2].map(m=>'<div class="kpi"><div class="l">'+mlabel(m)+'最多能做'+(m>D.qEnd?'（下季度）':'')+'</div><div class="v">'+wan(sum(p=>feeOf(p,m,i)))+'</div><div class="s">保守 '+wan(sum(p=>feeOf(p,m,0)))+' · 乐观 '+wan(sum(p=>feeOf(p,m,2)))+'</div></div>').join("")+
+   [D.cur,D.m1,D.m2].map(m=>'<div class="kpi"><div class="l">'+mlabel(m)+'最多能做'+(m>D.qEnd?'（下季度）':'')+'</div><div class="v">'+wan(sum(p=>fo(p,m,i)))+'</div><div class="s">保守 '+wan(sum(p=>fo(p,m,0)))+' · 乐观 '+wan(sum(p=>fo(p,m,2)))+'</div></div>').join("")+
    (over.length?'<div class="kpi red"><div class="l">本月计划做多了</div><div class="v">'+over.length+' 处</div><div class="s">本月货差 '+wan(-over.reduce((s,p)=>s+p.months[D.cur].gap[i],0))+'，去"催出货"看</div></div>':'')+
    '</div>';
   html+='<div class="bar" style="margin-top:-4px"><span class="sub">只看能做 ≥</span><input type="number" id="thr" value="'+S.thr+'" step="100" min="0" style="width:90px"><span class="sub">元的（'+rows.length+' / '+all+' 项）· 点一行看是怎么算出来的</span></div>';
   const by=new Map();rows.forEach(p=>{const k=p.name;if(!by.has(k))by.set(k,[]);by.get(k).push(p)});
-  const groups=[...by.entries()].sort((a,b)=>b[1].reduce((s,p)=>s+rowQ(p,i),0)-a[1].reduce((s,p)=>s+rowQ(p,i),0));
+  const groups=[...by.entries()].sort((a,b)=>b[1].reduce((s,p)=>s+rq(p,i),0)-a[1].reduce((s,p)=>s+rq(p,i),0));
   if(!groups.length)html+='<div class="card"><div class="empty">当前筛选下没有能做费用的活动</div></div>';
   for(const [name,ps] of groups){
-    ps.sort((a,b)=>rowQ(b,i)-rowQ(a,i));
-    const tq=ps.reduce((s,p)=>s+rowQ(p,i),0);
+    ps.sort((a,b)=>rq(b,i)-rq(a,i));
+    const tq=ps.reduce((s,p)=>s+rq(p,i),0);
     html+='<div class="card"><div class="grp"><span class="t">'+h(name)+'</span><span class="code">'+h([...new Set(ps.map(p=>p.code))].join(" / "))+'</span><span class="sp"></span><span class="sum">本季度最多 '+money(tq)+' · 建议做 <b>'+money(ps.reduce((s,p)=>s+(al.get(p.id)||0),0))+'</b> 元</span></div>';
     html+='<table><thead><tr><th>活动</th><th>渠道</th><th class="n hide-m">费率</th>'+[D.cur,D.m1,D.m2].map(m=>'<th class="n">'+mlabel(m)+(m>D.qEnd?'<span class="sub">·下季</span>':'')+'</th>').join("")+'<th class="n">本季度最多</th><th class="n">建议做</th><th class="n hide-m">预算余额</th></tr></thead><tbody>';
     for(const p of ps){
       const c=p.months[D.cur];const g=c.gap[i];
-      html+='<tr class="row" data-id="'+h(p.id)+'"><td><div>'+h(p.cpDesc)+(p.bucket?' <span class="chip nodata">'+h(p.bucket)+'</span>':'')+(g<-0.5?' <span class="chip risk" title="这个客户这个活动本月已做的计划，要的货比本月预计能出的多；跨月计划下月能补的部分不算">本月计划多了，货差 '+money(-g)+'</span>':'')+'</div><div class="sub">'+(new Set(ps.map(x=>x.code)).size>1?h(p.code)+' · ':'')+h(p.cp)+' · '+h(p.scope)+(p.regional?' · <span class="chip follow">区域自主·已扣其他活动</span>':p.broad?' · <span class="chip nodata">通用预算·也能做陈列/上市</span>':'')+'</div>'+(p.recommend&&p.recommend.length?'<div class="sub">建议做在：'+p.recommend.slice(0,2).map(g=>h(g.group)+' '+money(g.fee)).join(' · ')+'</div>':'')+'</td><td>'+h(p.channel)+'</td><td class="n hide-m">'+(c.rate==null?'<span class="neg">待定</span>':pct(c.rate))+'</td>'+
-       [D.cur,D.m1,D.m2].map(m=>{const v=feeOf(p,m,i);return '<td class="n '+(p.months[m].inCP?cls(v):'zero')+'">'+(p.months[m].inCP?money(v):'<span class="sub">活动已结束</span>')+'</td>'}).join("")+
-       '<td class="n"><b>'+money(rowQ(p,i))+'</b><div class="sub">'+money(rowQ(p,0))+' – '+money(rowQ(p,2))+'</div></td><td class="n"><b class="pos">'+money(al.get(p.id)||0)+'</b></td><td class="n hide-m">'+money(p.cpBalance)+(rowQ(p,i)>p.cpBalance+0.5?'<div class="sub neg">预算不够</div>':'')+'</td></tr>';
+      html+='<tr class="row" data-id="'+h(p.id)+'"><td><div>'+h(p.cpDesc)+(p.bucket?' <span class="chip nodata">'+h(p.bucket)+'</span>':'')+(g<-0.5?' <span class="chip risk" title="这个客户这个活动本月已做的计划，要的货比本月预计能出的多；跨月计划下月能补的部分不算">本月计划多了，货差 '+money(-g)+'</span>':'')+'</div><div class="sub">'+(new Set(ps.map(x=>x.code)).size>1?h(p.code)+' · ':'')+h(p.cp)+' · '+h(p.scope)+(p.regional?' · <span class="chip follow">区域自主·已扣其他活动</span>':p.broad?' · <span class="chip nodata">通用预算·也能做陈列/上市</span>':'')+'</div>'+(pfOn()?'<div class="sub"><span class="chip follow">选中产品占这个池 '+Math.round(sh(p)*100)+'%</span></div>':'')+(p.recommend&&p.recommend.length?'<div class="sub">建议做在：'+p.recommend.slice(0,2).map(g=>h(g.group)+' '+money(g.fee)).join(' · ')+'</div>':'')+'</td><td>'+h(p.channel)+'</td><td class="n hide-m">'+(c.rate==null?'<span class="neg">待定</span>':pct(c.rate))+'</td>'+
+       [D.cur,D.m1,D.m2].map(m=>{const v=fo(p,m,i);return '<td class="n '+(p.months[m].inCP?cls(v):'zero')+'">'+(p.months[m].inCP?money(v):'<span class="sub">活动已结束</span>')+'</td>'}).join("")+
+       '<td class="n"><b>'+money(rq(p,i))+'</b><div class="sub">'+money(rq(p,0))+' – '+money(rq(p,2))+'</div></td><td class="n"><b class="pos">'+money(al.get(p.id)||0)+'</b></td><td class="n hide-m">'+money(p.cpBalance)+(rq(p,i)>p.cpBalance+0.5?'<div class="sub neg">预算不够</div>':'')+'</td></tr>';
       if(S.open.has(p.id))html+='<tr class="detail"><td colspan="10">'+capDetail(p)+'</td></tr>';
     }
     html+='</tbody></table></div>';
   }
 
   el.innerHTML=html;
+  el.querySelectorAll("select[data-pf]").forEach(x=>x.onchange=()=>{const k=x.dataset.pf;S.pf[k]=x.value;let after=false;PL.forEach(([kk])=>{if(after)S.pf[kk]="";if(kk===k)after=true});renderCap()});
+  const clr=document.getElementById("pfClr");if(clr)clr.onclick=()=>{PL.forEach(([k])=>S.pf[k]="");renderCap()};
   const t=document.getElementById("thr");t.onchange=()=>{S.thr=Math.max(0,+t.value||0);renderCap()};
   el.querySelectorAll("tr.row").forEach(r=>r.onclick=()=>{const id=r.dataset.id;S.open.has(id)?S.open.delete(id):S.open.add(id);renderCap()});
 }
@@ -172,7 +192,7 @@ function capDetail(p){
   D.scenarios.forEach((s,j)=>{a+='<tr><td><b>'+h(s.label)+'</b><div class="sub">预计出货<br>− 已做计划要的货<br>= 能做费用（× 费率）</div></td>'+M.map(m=>{const c=p.months[m];return '<td class="n">'+money(c.so[j])+'<div class="sub">− '+money(c.occ)+(c.occN?'<br>（'+c.occN+' 条计划，费用 '+money(c.occFee)+'）':'')+(c.carryIn&&c.carryIn[j]>0.5?'<br>− 上月没出够要补 '+money(c.carryIn[j]):'')+(c.wall>0.5?'<br>费用再扣其他活动 '+money(c.wall):'')+'</div><b class="'+cls(c.fee[j])+'">'+money(c.fee[j])+'</b></td>'}).join("")+'</tr>'});
   a+='</tbody></table><div class="note">本月出货 = 已经出了 '+money(f.mtd)+' + 剩下 '+D.remainDays+' 天预计 '+money(f.remain)+'。下月、下下月 = 前 3 个月平均 '+money(f.base)+' × 季节调整 '+f.s1.toFixed(2)+' / '+f.s2.toFixed(2)+'，下月再 × 库存调整 '+f.invF.toFixed(2)+'。保守/乐观只对"还没出的货"打 85 折或放大 1.2 倍。</div></div>';
   a+='<div class="dbox"><h4>是怎么估的</h4><table><tbody><tr><td>前 3 个月实际出货（已扣退货）</td><td class="n">'+f.last3.slice().reverse().map((v,k)=>mlabel(addM(D.cur,k-3))+' '+money(v)).join(' / ')+'</td></tr><tr><td>去年同月出货（'+M.map(mlabel).join('/')+'）</td><td class="n">'+f.ly.map(money).join(' / ')+'</td></tr><tr><td>客户库存（估）</td><td class="n">'+money(f.stock)+'<div class="sub">'+(f.weeks==null?'没有库存数据，下月不调整':'够卖 '+f.weeks.toFixed(1)+' 周 → 下月预计 × '+f.invF.toFixed(2))+'</div></td></tr>'+(p.timedNote?'<tr><td>活动规则排除</td><td>'+h(p.timedNote)+'</td></tr>':'')+'<tr><td>本季度已做的计划</td><td class="n">'+(()=>{const n=new Set();let fee=0;M.forEach(m=>{fee+=p.months[m].occFee||0});return '费用 '+money(fee)})()+'<div class="sub">要出 '+money(M.reduce((s,m)=>s+p.months[m].occ,0))+' 的货才能核销</div></td></tr></tbody></table></div></div>';
-  if(p.recommend&&p.recommend.length)a+='<div class="dbox" style="margin-top:12px"><h4>建议做在哪些产品上（能做的费用从高到低）</h4><table><thead><tr><th>产品组</th><th class="n">近 4 个月出货</th><th class="n">能做费用</th><th>上传时用的产品（卖得最多）</th></tr></thead><tbody>'+p.recommend.map(g=>'<tr><td><b>'+h(g.group)+'</b></td><td class="n">'+money(g.so)+'</td><td class="n">'+money(g.fee)+'</td><td>'+h(g.top.name)+'<div class="sub">'+h(g.top.sku)+'</div></td></tr>').join("")+'</tbody></table></div>';
+  if(p.recommend&&p.recommend.length)a+='<div class="dbox" style="margin-top:12px"><h4>建议做在哪些产品上（能做的费用从高到低）</h4><table><thead><tr><th>产品组</th><th class="n">近 4 个月出货</th><th class="n">能做费用</th><th class="n">占这个池 / 累计</th><th>上传时用的产品（卖得最多）</th></tr></thead><tbody>'+(()=>{const tot=p.px.reduce((x,a)=>x+Math.max(0,a[1])*a[2],0)||1;let cum=0;return p.recommend.map(g=>{cum+=g.fee;return '<tr><td><b>'+h(g.group)+'</b></td><td class="n">'+money(g.so)+'</td><td class="n">'+money(g.fee)+'</td><td class="n">'+Math.round(g.fee/tot*100)+'% / <b>'+Math.round(cum/tot*100)+'%</b></td><td>'+h(g.top.name)+'<div class="sub">'+h(g.top.sku)+'</div></td></tr>'}).join("")})()+'</tbody></table><div class="note">累计到 80%～90% 的产品组通常就够了，尾部产品不用拉进计划；但计划备注写窄后，核销只看这些产品，退货也只算它们的。</div></div>';
   if(p.regional){const w=M.flatMap(m=>(p.months[m].wallItems||[]).map(x=>({m,...x})));if(w.length)a+='<div class="dbox" style="margin-top:12px"><h4>区域自主要先扣掉的其他活动费用</h4><table><tbody>'+w.map(x=>'<tr><td>'+mlabel(x.m)+'</td><td>'+h(x.pl)+'<div class="sub">'+h(x.cp)+'</div></td><td class="n neg">− '+money(x.fee)+'</td></tr>').join("")+'</tbody></table></div>'}
   a+='<div class="dbox" style="margin-top:12px"><h4>每个产品的出货（负数 = 退货）</h4><table><thead><tr><th>产品</th><th class="hide-m">分类</th>'+p.recentMonths.map(m=>'<th class="n">'+mlabel(m)+'</th>').join("")+'</tr></thead><tbody>'+
    p.skuRows.map(r=>'<tr><td>'+h(r.name)+'<div class="sub">'+h(r.sku)+'</div></td><td class="hide-m sub">'+h([r.brand,r.s1,r.s2].filter(Boolean).join(' · '))+'</td>'+r.v.map(v=>'<td class="n '+cls(v)+'">'+money(v)+'</td>').join("")+'</tr>').join("")+'</tbody></table></div>';
@@ -336,12 +356,19 @@ document.getElementById("exp").onclick=async()=>{
   const M=[D.cur,D.m1,D.m2];
   const cap=D.pools.filter(p=>p.plannable&&match(p,poolText(p))).map(p=>{const o={"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"机制桶":p.bucket,"产品范围":p.scope,"费率":p.months[D.cur].rate,"CP余额":Math.round(p.cpBalance)};
     D.scenarios.forEach((s,j)=>{M.forEach(m=>o[mlabel(m)+"可做_"+s.label]=Math.round(feeOf(p,m,j)));o["本季度合计_"+s.label]=Math.round(rowQ(p,j))});
-    o["建议分配_基准"]=allocMap(1).get(p.id)||0;o["推荐产品组"]=(p.recommend||[]).map(g=>g.group+"("+Math.round(g.fee)+")").join("、");M.forEach(m=>{o[mlabel(m)+"已排计划出货"]=Math.round(p.months[m].occ);o[mlabel(m)+"已扣其他CP"]=Math.round(p.months[m].wall||0)});o["近3月均值"]=Math.round(p.forecast.base);o["本月已发生"]=Math.round(p.forecast.mtd);return o});
+    o["建议分配_基准"]=allocMap(1).get(p.id)||0;if(pfOn())o["选中产品占比"]=+share(p).toFixed(4);o["推荐产品组"]=(p.recommend||[]).map(g=>g.group+"("+Math.round(g.fee)+")").join("、");M.forEach(m=>{o[mlabel(m)+"已排计划出货"]=Math.round(p.months[m].occ);o[mlabel(m)+"已扣其他CP"]=Math.round(p.months[m].wall||0)});o["近3月均值"]=Math.round(p.forecast.base);o["本月已发生"]=Math.round(p.forecast.mtd);return o});
   const flt=D.open.filter(o=>match(o,planText(o))).map(o=>({"状态":LV[o.level][0],"客户":o.name,"客户编码":o.code,"PL":o.pl,"CP":o.cp,"活动":o.cpDesc,"渠道":o.channel,"开始":o.start,"结束":o.end,"备注日期":o.remarkDates?"是":"","费率":o.rate,"计划进货":Math.round(o.need),"池内净出货":Math.round(o.gross),"被点数更高计划先用的货":Math.round(o.peerDone),"同活动计划数":o.packN||1,"点数排第":o.packRank||1,"本计划可用净出货":Math.round(o.avail),"覆盖率":o.need?+(o.avail/o.need).toFixed(4):0,"还需出货":Math.round(o.shortNow),"截止":o.deadline,"剩余天数":o.closed?0:daysLeft(o),"按趋势到截止仍差":Math.round(o.shortFinal),"池内退货":Math.round(o.returns),"计划费用":Math.round(o.budget),"已核销":Math.round(o.verified),"预计少核":Math.round(o.lossFee),"建议":(closeAdvice(o)||{}).text||"","余量出货":Math.round(o.surplus||0),"取数范围":o.scopeNote,"计划备注":o.remarks}));
   const ret=[];D.open.filter(o=>match(o,planText(o))).forEach(o=>o.returnSkus.forEach(r=>ret.push({"客户":o.name,"PL":o.pl,"活动":o.cpDesc,"渠道":o.channel,"SKU":r.sku,"产品":r.name,"退货净额":Math.round(r.v)})));
   const hist=[];D.pools.filter(p=>p.plannable&&match(p,poolText(p))).forEach(p=>p.hist.forEach(x=>hist.push({"客户":p.name,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"月份":x.mm,"净出货":Math.round(x.actual),"其中退货":Math.round(x.neg),"已排计划":Math.round(x.occ),"剩余":Math.round(x.rem),"可回溯费用":x.fee==null?null:Math.round(x.fee)})));
   const note=D.checks.map(c=>({"类型":c.level==="warn"?"注意":"说明","内容":c.text}));
-  const res=await fetch("/v10/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cap,flt,ret,hist,note,cur:D.cur})});
+  // 产品明细：每个池下每个 SKU 的近 4 个月出货、费率、占这个池能做费用的比例（选了产品就只导出选中的）
+  const AL1=allocMap(1);const prod=[];
+  D.pools.filter(p=>p.plannable&&match(p,poolText(p))).forEach(p=>{const tot=p.px.reduce((x,a)=>x+Math.max(0,a[1])*a[2],0);const q=rowQ(p,1),al=AL1.get(p.id)||0;
+    p.px.forEach(([i,so,rt])=>{if(pfOn()&&!pfHit(i))return;const m=PM[i];const sh=tot>0?Math.max(0,so)*rt/tot:0;
+      prod.push({"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"Brand":m[2],"S1":m[3],"S2":m[4],"S3":m[5],"SKU":m[0],"产品":m[1],"近4个月净出货":Math.round(so),"费率":rt,"占这个池能做费用":+sh.toFixed(4),"本季度能做_基准":Math.round(q*sh),"建议做_基准(按占比)":Math.round(al*sh)})})});
+  const box=document.createElement("div");box.innerHTML=helpCap()+helpFlt();
+  const rules=[...box.querySelectorAll("li")].map((li,k)=>({"序号":k+1,"规则":li.textContent})).concat(D.checks.filter(c=>c.level==="info").map(c=>({"序号":"","规则":c.text})));
+  const res=await fetch("/v10/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cap,flt,ret,hist,note,prod,rules,cur:D.cur})});
   if(!res.ok){toast("导出失败："+res.status);return}
   const b=await res.blob();const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="费用规划_"+D.dataDate+".xlsx";a.click();
 };

@@ -98,7 +98,9 @@ Deno.serve(async (req: Request) => {
       sheet(wb, "能做多少费用", p.cap || []);
       sheet(wb, "在途计划核销", p.flt || []);
       sheet(wb, "退货明细", p.ret || []);
+      sheet(wb, "产品明细", p.prod || []);
       sheet(wb, "历史回溯", p.hist || []);
+      sheet(wb, "算法说明", p.rules || []);
       sheet(wb, "说明", p.note || []);
       const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx", compression: true });
       return new Response(bytes, {
