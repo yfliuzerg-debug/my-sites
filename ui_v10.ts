@@ -84,6 +84,7 @@ export function resultPage(data: unknown) {
 <div class="tabs"><div class="tab on" data-t="cap">还能做多少费用</div><div class="tab" data-t="flt">催出货<span class="n" id="redN"></span></div><div class="tab" data-t="chk">数据说明</div></div>
 <div class="bar">
 <select id="fCust"><option value="">全部客户</option></select>
+<select id="fCP" style="max-width:260px"><option value="">全部活动（CP）</option></select>
 <div class="seg" id="fBU"><button data-v="" class="on">全部</button><button data-v="dairy">奶品</button><button data-v="coffee">咖啡</button><button data-v="confectionery">糖果</button></div>
 <input type="search" id="fQ" placeholder="搜活动名 / CP 号 / PL 号 / 产品" style="min-width:220px">
 <span class="sp" style="flex:1"></span>
@@ -94,7 +95,7 @@ export function resultPage(data: unknown) {
 <div class="toast" id="toast"></div>
 <script>
 const D=${json};
-const S={cust:"",bu:"",q:"",sc:1,tab:"cap",fv:"chase",thr:500,open:new Set(),pf:{brand:"",s1:"",s2:"",s3:"",sku:""}};
+const S={cust:"",cp:"",bu:"",q:"",sc:1,tab:"cap",fv:"chase",thr:500,open:new Set(),pf:{brand:"",s1:"",s2:"",s3:"",sku:""}};
 const PM=D.prod||[];// [SKU,名称,Brand,S1,S2,S3]
 D.pools.forEach(p=>{p.skuRows=(p.sr||[]).map(a=>({sku:PM[a[0]][0],name:PM[a[0]][1],brand:PM[a[0]][2],s1:PM[a[0]][3],s2:PM[a[0]][4],v:a.slice(1)}));p.px=p.px||[]});
 const fmt=new Intl.NumberFormat("zh-CN",{maximumFractionDigits:0});
@@ -105,6 +106,8 @@ const h=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;
 const mlabel=mm=>(+mm.slice(4))+"月";
 const addM=(mm,n)=>{const d=new Date(+mm.slice(0,4),+mm.slice(4)-1+n,1);return d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")};
 const pct=v=>{const x=Math.round(v*1000)/10;return (x%1?x.toFixed(1):String(x))+"%"};
+const rng=a=>{a=a.filter(v=>v>=0);if(!a.length)return '-';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?pct(lo):pct(lo)+'–'+pct(hi)};
+const grpOf=i=>PM[i][4]||PM[i][3]||PM[i][2]||'其他';
 const BU={dairy:"奶品",coffee:"咖啡",confectionery:"糖果"};
 const LV={lost:["已过期","lost"],risk:["跟不上","risk"],follow:["跟得上","follow"],ok:["货已够","ok"],nodata:["没数据","nodata"]};
 const qMonths=[D.cur,D.m1,D.m2].filter(m=>m<=D.qEnd), nMonths=[D.cur,D.m1,D.m2].filter(m=>m>D.qEnd);
@@ -112,7 +115,7 @@ document.getElementById("meta").textContent="出货数据截至 "+D.dataDate+" �
 const custs=[...new Map([...D.pools,...D.open].map(x=>[x.name,x.name])).keys()].sort((a,b)=>a.localeCompare(b,"zh-CN"));
 document.getElementById("fCust").insertAdjacentHTML("beforeend",custs.map(c=>'<option>'+h(c)+'</option>').join(""));
 function toast(t){const e=document.getElementById("toast");e.textContent=t;e.classList.add("on");setTimeout(()=>e.classList.remove("on"),1600)}
-function match(x,text){if(S.cust&&x.name!==S.cust)return false;if(S.bu&&x.bu&&x.bu!==S.bu)return false;if(S.q){const q=S.q.toLowerCase();if(!text.toLowerCase().includes(q))return false}return true}
+function match(x,text){if(S.cust&&x.name!==S.cust)return false;if(S.cp&&x.cp!==S.cp)return false;if(S.bu&&x.bu&&x.bu!==S.bu)return false;if(S.q){const q=S.q.toLowerCase();if(!text.toLowerCase().includes(q))return false}return true}
 function poolText(p){return [p.name,p.code,p.cp,p.cpDesc,p.channel,p.bucket,...p.skuRows.map(r=>r.name+" "+r.sku)].join(" ")}
 function planText(o){return [o.name,o.code,o.pl,o.cp,o.cpDesc,o.channel,o.skuName,o.sku].join(" ")}
 function poolBU(p){return p.bu}
@@ -169,7 +172,7 @@ function renderCap(){
     ps.sort((a,b)=>rq(b,i)-rq(a,i));
     const tq=ps.reduce((s,p)=>s+rq(p,i),0);
     html+='<div class="card"><div class="grp"><span class="t">'+h(name)+'</span><span class="code">'+h([...new Set(ps.map(p=>p.code))].join(" / "))+'</span><span class="sp"></span><span class="sum">本季度最多 '+money(tq)+' · 建议做 <b>'+money(ps.reduce((s,p)=>s+(al.get(p.id)||0),0))+'</b> 元</span></div>';
-    html+='<table><thead><tr><th>活动</th><th>渠道</th><th class="n hide-m">费率</th>'+[D.cur,D.m1,D.m2].map(m=>'<th class="n">'+mlabel(m)+(m>D.qEnd?'<span class="sub">·下季</span>':'')+'</th>').join("")+'<th class="n">本季度最多</th><th class="n">建议做</th><th class="n hide-m">预算余额</th></tr></thead><tbody>';
+    html+='<table><thead><tr><th>活动</th><th>渠道</th><th class="n hide-m" title="按各产品出货加权的平均点数，不是单品上限；单品点数看导出的产品明细">平均费率</th>'+[D.cur,D.m1,D.m2].map(m=>'<th class="n">'+mlabel(m)+(m>D.qEnd?'<span class="sub">·下季</span>':'')+'</th>').join("")+'<th class="n">本季度最多</th><th class="n">建议做</th><th class="n hide-m">预算余额</th></tr></thead><tbody>';
     for(const p of ps){
       const c=p.months[D.cur];const g=c.gap[i];
       html+='<tr class="row" data-id="'+h(p.id)+'"><td><div>'+h(p.cpDesc)+(p.bucket?' <span class="chip nodata">'+h(p.bucket)+'</span>':'')+(g<-0.5?' <span class="chip risk" title="这个客户这个活动本月已做的计划，要的货比本月预计能出的多；跨月计划下月能补的部分不算">本月计划多了，货差 '+money(-g)+'</span>':'')+'</div><div class="sub">'+(new Set(ps.map(x=>x.code)).size>1?h(p.code)+' · ':'')+h(p.cp)+' · '+h(p.scope)+(p.regional?' · <span class="chip follow">区域自主·已扣其他活动</span>':p.broad?' · <span class="chip nodata">通用预算·也能做陈列/上市</span>':'')+'</div>'+(pfOn()?'<div class="sub"><span class="chip follow">选中产品占这个池 '+Math.round(sh(p)*100)+'%</span></div>':'')+(p.recommend&&p.recommend.length?'<div class="sub">建议做在：'+p.recommend.slice(0,2).map(g=>h(g.group)+' '+money(g.fee)).join(' · ')+'</div>':'')+'</td><td>'+h(p.channel)+'</td><td class="n hide-m">'+(c.rate==null?'<span class="neg">待定</span>':pct(c.rate))+'</td>'+
@@ -192,7 +195,8 @@ function capDetail(p){
   D.scenarios.forEach((s,j)=>{a+='<tr><td><b>'+h(s.label)+'</b><div class="sub">预计出货<br>− 已做计划要的货<br>= 能做费用（× 费率）</div></td>'+M.map(m=>{const c=p.months[m];return '<td class="n">'+money(c.so[j])+'<div class="sub">− '+money(c.occ)+(c.occN?'<br>（'+c.occN+' 条计划，费用 '+money(c.occFee)+'）':'')+(c.carryIn&&c.carryIn[j]>0.5?'<br>− 上月没出够要补 '+money(c.carryIn[j]):'')+(c.wall>0.5?'<br>费用再扣其他活动 '+money(c.wall):'')+'</div><b class="'+cls(c.fee[j])+'">'+money(c.fee[j])+'</b></td>'}).join("")+'</tr>'});
   a+='</tbody></table><div class="note">本月出货 = 已经出了 '+money(f.mtd)+' + 剩下 '+D.remainDays+' 天预计 '+money(f.remain)+'。下月、下下月 = 前 3 个月平均 '+money(f.base)+' × 季节调整 '+f.s1.toFixed(2)+' / '+f.s2.toFixed(2)+'，下月再 × 库存调整 '+f.invF.toFixed(2)+'。保守/乐观只对"还没出的货"打 85 折或放大 1.2 倍。</div></div>';
   a+='<div class="dbox"><h4>是怎么估的</h4><table><tbody><tr><td>前 3 个月实际出货（已扣退货）</td><td class="n">'+f.last3.slice().reverse().map((v,k)=>mlabel(addM(D.cur,k-3))+' '+money(v)).join(' / ')+'</td></tr><tr><td>去年同月出货（'+M.map(mlabel).join('/')+'）</td><td class="n">'+f.ly.map(money).join(' / ')+'</td></tr><tr><td>客户库存（估）</td><td class="n">'+money(f.stock)+'<div class="sub">'+(f.weeks==null?'没有库存数据，下月不调整':'够卖 '+f.weeks.toFixed(1)+' 周 → 下月预计 × '+f.invF.toFixed(2))+'</div></td></tr>'+(p.timedNote?'<tr><td>活动规则排除</td><td>'+h(p.timedNote)+'</td></tr>':'')+'<tr><td>本季度已做的计划</td><td class="n">'+(()=>{const n=new Set();let fee=0;M.forEach(m=>{fee+=p.months[m].occFee||0});return '费用 '+money(fee)})()+'<div class="sub">要出 '+money(M.reduce((s,m)=>s+p.months[m].occ,0))+' 的货才能核销</div></td></tr></tbody></table></div></div>';
-  if(p.recommend&&p.recommend.length)a+='<div class="dbox" style="margin-top:12px"><h4>建议做在哪些产品上（能做的费用从高到低）</h4><table><thead><tr><th>产品组</th><th class="n">近 4 个月出货</th><th class="n">能做费用</th><th class="n">占这个池 / 累计</th><th>上传时用的产品（卖得最多）</th></tr></thead><tbody>'+(()=>{const tot=p.px.reduce((x,a)=>x+Math.max(0,a[1])*a[2],0)||1;let cum=0;return p.recommend.map(g=>{cum+=g.fee;return '<tr><td><b>'+h(g.group)+'</b></td><td class="n">'+money(g.so)+'</td><td class="n">'+money(g.fee)+'</td><td class="n">'+Math.round(g.fee/tot*100)+'% / <b>'+Math.round(cum/tot*100)+'%</b></td><td>'+h(g.top.name)+'<div class="sub">'+h(g.top.sku)+'</div></td></tr>'}).join("")})()+'</tbody></table><div class="note">累计到 80%～90% 的产品组通常就够了，尾部产品不用拉进计划；但计划备注写窄后，核销只看这些产品，退货也只算它们的。</div></div>';
+  if(p.recommend&&p.recommend.length)a+='<div class="dbox" style="margin-top:12px"><h4>建议做在哪些产品上（能做的费用从高到低）</h4><table><thead><tr><th>产品组</th><th class="n">近 4 个月出货</th><th class="n">能做费用</th><th class="n">占这个池 / 累计</th><th class="n">单品点数</th><th>上传时用的产品（卖得最多）</th></tr></thead><tbody>'+(()=>{const tot=p.px.reduce((x,a)=>x+Math.max(0,a[1])*a[2],0)||1;let cum=0;return p.recommend.map(g=>{cum+=g.fee;return '<tr><td><b>'+h(g.group)+'</b></td><td class="n">'+money(g.so)+'</td><td class="n">'+money(g.fee)+'</td><td class="n">'+Math.round(g.fee/tot*100)+'% / <b>'+Math.round(cum/tot*100)+'%</b></td><td class="n">'+rng(p.px.filter(a=>grpOf(a[0])===g.group).map(a=>a[2]))+'</td><td>'+h(g.top.name)+'<div class="sub">'+h(g.top.sku)+'</div></td></tr>'}).join("")})()+'</tbody></table><div class="note">累计到 80%～90% 的产品组通常就够了，尾部产品不用拉进计划；但计划备注写窄后，核销只看这些产品，退货也只算它们的。</div></div>';
+  if(p.excl&&(p.excl.same.length||p.excl.other.length))a+='<div class="dbox" style="margin-top:12px"><h4>写新计划备注时要排除的 PL</h4><table><tbody>'+(p.excl.same.length?'<tr><td>同活动已有计划</td><td style="user-select:all">'+h(p.excl.same.join('、'))+'</td></tr>':'')+(p.excl.other.length?'<tr><td>其他活动、产品有重叠</td><td style="user-select:all">'+h(p.excl.other.map(x=>x[0]).join('、'))+'<div class="sub">'+h([...new Set(p.excl.other.map(x=>x[1]))].join(' / '))+'</div></td></tr>':'')+'</tbody></table><div class="note">本月到后两个月里，同客户同渠道已经占货的计划。点一下整行选中可复制。</div></div>';
   if(p.regional){const w=M.flatMap(m=>(p.months[m].wallItems||[]).map(x=>({m,...x})));if(w.length)a+='<div class="dbox" style="margin-top:12px"><h4>区域自主要先扣掉的其他活动费用</h4><table><tbody>'+w.map(x=>'<tr><td>'+mlabel(x.m)+'</td><td>'+h(x.pl)+'<div class="sub">'+h(x.cp)+'</div></td><td class="n neg">− '+money(x.fee)+'</td></tr>').join("")+'</tbody></table></div>'}
   a+='<div class="dbox" style="margin-top:12px"><h4>每个产品的出货（负数 = 退货）</h4><table><thead><tr><th>产品</th><th class="hide-m">分类</th>'+p.recentMonths.map(m=>'<th class="n">'+mlabel(m)+'</th>').join("")+'</tr></thead><tbody>'+
    p.skuRows.map(r=>'<tr><td>'+h(r.name)+'<div class="sub">'+h(r.sku)+'</div></td><td class="hide-m sub">'+h([r.brand,r.s1,r.s2].filter(Boolean).join(' · '))+'</td>'+r.v.map(v=>'<td class="n '+cls(v)+'">'+money(v)+'</td>').join("")+'</tr>').join("")+'</tbody></table></div>';
@@ -329,6 +333,8 @@ function helpCap(){return '<details class="help"><summary>这页怎么看？</su
  '<li><b>建议做在</b>：哪些产品组近 4 个月卖得多、费率高，就优先做在上面；点开能看到上传用哪个产品。</li>'+
  '<li><b>通用预算</b>（MT TT、区域自主）：也能做陈列、上市，这里只算折扣部分。<b>区域自主</b>不能和其他活动用同一批货，已经先扣掉。</li>'+
  '<li><b>咖啡零食渠道（SCD）</b>：CDT 只批 2% 的计划，所以这页按 2% 估能做多少；7+2 装不算。这是 CDT 定的规划上限，审核销时按计划点数核（见"催出货"页说明）。</li>'+
+ '<li><b>平均费率 ≠ 单品上限</b>：表里的费率是这个池各产品按出货加权的平均点数；每个产品自己的点数看导出"产品明细"的 SKURate（折扣率上限表）和本池计算费率。</li>'+
+ '<li><b>备注排除 PL</b>：点开一行能看到同客户同渠道本月到后两月已占货的计划号，写新计划备注时直接排除，导出表里也有。</li>'+
  '<li><b>点数从哪来</b>：活动机制写了具体点数就按机制；写"不超过折扣率上限"的，按 TTS 折扣率上限表（只看 DT 那行，批发渠道看批发那行）。</li></ul></details>'}
 function helpFlt(){return '<details class="help"><summary>这页怎么看？</summary><ul>'+
  '<li><b>同一个活动的几条计划</b>（同客户、同 CP 号）：货可以互相挪，按<b>计划点数</b>核（不看单个产品的点数）。核销同事会先把货填进点数最高的那条，货不够时先放弃点数低的。网站也按这个顺序分货，所以同一个活动的几条计划进度会不一样。这是现行做法，财务如果收紧会再改。</li>'+
@@ -344,28 +350,33 @@ function renderChk(){
   document.getElementById("v-chk").innerHTML='<div class="card" style="padding:14px 18px"><h3 style="margin:0 0 8px">数据检查和算法说明</h3><ul class="checks">'+D.checks.map(c=>'<li class="'+c.level+'">'+(c.level==="warn"?"⚠️ ":"")+h(c.text)+'</li>').join("")+'</ul>'+
   '<div class="sub">文件概况：BI-SO '+D.files.soRows+' 行（月份 '+D.files.months[0]+'–'+D.files.months[D.files.months.length-1]+'）· TTS 计划 '+D.files.plans+' 条 · CP '+D.files.cps+' 个 · 生成于 '+new Date(D.generatedAt).toLocaleString("zh-CN")+'</div></div>';
 }
-function render(){document.getElementById("redN").textContent=D.open.filter(o=>o.level==="risk"&&match(o,planText(o))).length||"";
+// CP 下拉：只列当前客户/BU 下有的活动，选中的不在范围内就清掉
+function cpOpts(){const m=new Map();[...D.pools.filter(p=>p.plannable),...D.open].forEach(x=>{if(S.cust&&x.name!==S.cust)return;if(S.bu&&x.bu&&x.bu!==S.bu)return;if(!m.has(x.cp))m.set(x.cp,x.cpDesc||"")});
+  if(S.cp&&!m.has(S.cp))S.cp="";const el=document.getElementById("fCP");
+  el.innerHTML='<option value="">全部活动（CP）</option>'+[...m.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([c,d])=>'<option value="'+h(c)+'"'+(S.cp===c?' selected':'')+'>'+h(c+' '+d)+'</option>').join("")}
+function render(){cpOpts();document.getElementById("redN").textContent=D.open.filter(o=>o.level==="risk"&&match(o,planText(o))).length||"";
   document.getElementById("fSc").style.visibility=S.tab==="cap"?"visible":"hidden";document.getElementById("scLbl").style.visibility=S.tab==="cap"?"visible":"hidden";
   if(S.tab==="cap")renderCap();else if(S.tab==="flt")renderFlt();else renderChk()}
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===t));S.tab=t.dataset.t;["cap","flt","chk"].forEach(k=>document.getElementById("v-"+k).style.display=k===S.tab?"":"none");render()});
 document.getElementById("fCust").onchange=e=>{S.cust=e.target.value;render()};
+document.getElementById("fCP").onchange=e=>{S.cp=e.target.value;render()};
 document.getElementById("fQ").oninput=e=>{S.q=e.target.value.trim();render()};
 document.querySelectorAll("#fBU button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#fBU button").forEach(x=>x.classList.toggle("on",x===b));S.bu=b.dataset.v;render()});
 document.querySelectorAll("#fSc button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#fSc button").forEach(x=>x.classList.toggle("on",x===b));S.sc=+b.dataset.v;render()});
 document.getElementById("exp").onclick=async()=>{
   const M=[D.cur,D.m1,D.m2];
-  const cap=D.pools.filter(p=>p.plannable&&match(p,poolText(p))).map(p=>{const o={"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"机制桶":p.bucket,"产品范围":p.scope,"费率":p.months[D.cur].rate,"CP余额":Math.round(p.cpBalance)};
+  const cap=D.pools.filter(p=>p.plannable&&match(p,poolText(p))).map(p=>{const o={"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"机制桶":p.bucket,"产品范围":p.scope,"池平均费率(按出货加权,非单品上限)":p.months[D.cur].rate,"本池单品费率区间":rng(p.px.map(a=>a[2])),"SKURate区间(折扣率上限表)":rng(p.px.map(a=>a[3]??-1)),"CP余额":Math.round(p.cpBalance),"备注排除PL_同活动":(p.excl?p.excl.same:[]).join("、"),"备注排除PL_其他活动产品重叠":(p.excl?p.excl.other.map(x=>x[0]+"("+x[1]+")"):[]).join("、")};
     D.scenarios.forEach((s,j)=>{M.forEach(m=>o[mlabel(m)+"可做_"+s.label]=Math.round(feeOf(p,m,j)));o["本季度合计_"+s.label]=Math.round(rowQ(p,j))});
     o["建议分配_基准"]=allocMap(1).get(p.id)||0;if(pfOn())o["选中产品占比"]=+share(p).toFixed(4);o["推荐产品组"]=(p.recommend||[]).map(g=>g.group+"("+Math.round(g.fee)+")").join("、");M.forEach(m=>{o[mlabel(m)+"已排计划出货"]=Math.round(p.months[m].occ);o[mlabel(m)+"已扣其他CP"]=Math.round(p.months[m].wall||0)});o["近3月均值"]=Math.round(p.forecast.base);o["本月已发生"]=Math.round(p.forecast.mtd);return o});
-  const flt=D.open.filter(o=>match(o,planText(o))).map(o=>({"状态":LV[o.level][0],"客户":o.name,"客户编码":o.code,"PL":o.pl,"CP":o.cp,"活动":o.cpDesc,"渠道":o.channel,"开始":o.start,"结束":o.end,"备注日期":o.remarkDates?"是":"","费率":o.rate,"计划进货":Math.round(o.need),"池内净出货":Math.round(o.gross),"被点数更高计划先用的货":Math.round(o.peerDone),"同活动计划数":o.packN||1,"点数排第":o.packRank||1,"本计划可用净出货":Math.round(o.avail),"覆盖率":o.need?+(o.avail/o.need).toFixed(4):0,"还需出货":Math.round(o.shortNow),"截止":o.deadline,"剩余天数":o.closed?0:daysLeft(o),"按趋势到截止仍差":Math.round(o.shortFinal),"池内退货":Math.round(o.returns),"计划费用":Math.round(o.budget),"已核销":Math.round(o.verified),"预计少核":Math.round(o.lossFee),"建议":(closeAdvice(o)||{}).text||"","余量出货":Math.round(o.surplus||0),"取数范围":o.scopeNote,"计划备注":o.remarks}));
+  const flt=D.open.filter(o=>match(o,planText(o))).map(o=>({"状态":LV[o.level][0],"客户":o.name,"客户编码":o.code,"PL":o.pl,"CP":o.cp,"活动":o.cpDesc,"渠道":o.channel,"开始":o.start,"结束":o.end,"备注日期":o.remarkDates?"是":"","计划费率":o.rate,"计划进货":Math.round(o.need),"池内净出货":Math.round(o.gross),"被点数更高计划先用的货":Math.round(o.peerDone),"同活动计划数":o.packN||1,"点数排第":o.packRank||1,"本计划可用净出货":Math.round(o.avail),"覆盖率":o.need?+(o.avail/o.need).toFixed(4):0,"还需出货":Math.round(o.shortNow),"截止":o.deadline,"剩余天数":o.closed?0:daysLeft(o),"按趋势到截止仍差":Math.round(o.shortFinal),"池内退货":Math.round(o.returns),"计划费用":Math.round(o.budget),"已核销":Math.round(o.verified),"预计少核":Math.round(o.lossFee),"建议":(closeAdvice(o)||{}).text||"","余量出货":Math.round(o.surplus||0),"取数范围":o.scopeNote,"计划备注":o.remarks}));
   const ret=[];D.open.filter(o=>match(o,planText(o))).forEach(o=>o.returnSkus.forEach(r=>ret.push({"客户":o.name,"PL":o.pl,"活动":o.cpDesc,"渠道":o.channel,"SKU":r.sku,"产品":r.name,"退货净额":Math.round(r.v)})));
   const hist=[];D.pools.filter(p=>p.plannable&&match(p,poolText(p))).forEach(p=>p.hist.forEach(x=>hist.push({"客户":p.name,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"月份":x.mm,"净出货":Math.round(x.actual),"其中退货":Math.round(x.neg),"已排计划":Math.round(x.occ),"剩余":Math.round(x.rem),"可回溯费用":x.fee==null?null:Math.round(x.fee)})));
   const note=D.checks.map(c=>({"类型":c.level==="warn"?"注意":"说明","内容":c.text}));
   // 产品明细：每个池下每个 SKU 的近 4 个月出货、费率、占这个池能做费用的比例（选了产品就只导出选中的）
   const AL1=allocMap(1);const prod=[];
   D.pools.filter(p=>p.plannable&&match(p,poolText(p))).forEach(p=>{const tot=p.px.reduce((x,a)=>x+Math.max(0,a[1])*a[2],0);const q=rowQ(p,1),al=AL1.get(p.id)||0;
-    p.px.forEach(([i,so,rt])=>{if(pfOn()&&!pfHit(i))return;const m=PM[i];const sh=tot>0?Math.max(0,so)*rt/tot:0;
-      prod.push({"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"Brand":m[2],"S1":m[3],"S2":m[4],"S3":m[5],"SKU":m[0],"产品":m[1],"近4个月净出货":Math.round(so),"费率":rt,"占这个池能做费用":+sh.toFixed(4),"本季度能做_基准":Math.round(q*sh),"建议做_基准(按占比)":Math.round(al*sh)})})});
+    p.px.forEach(([i,so,rt,skr])=>{if(pfOn()&&!pfHit(i))return;const m=PM[i];const sh=tot>0?Math.max(0,so)*rt/tot:0;
+      prod.push({"客户":p.name,"客户编码":p.code,"BU":BU[p.bu]||p.bu,"CP":p.cp,"活动":p.cpDesc,"渠道":p.channel,"Brand":m[2],"S1":m[3],"S2":m[4],"S3":m[5],"SKU":m[0],"产品":m[1],"近4个月净出货":Math.round(so),"SKURate(折扣率上限表)":skr==null||skr<0?"":skr,"本池计算费率":rt,"占这个池能做费用":+sh.toFixed(4),"本季度能做_基准":Math.round(q*sh),"建议做_基准(按占比)":Math.round(al*sh)})})});
   const box=document.createElement("div");box.innerHTML=helpCap()+helpFlt();
   const rules=[...box.querySelectorAll("li")].map((li,k)=>({"序号":k+1,"规则":li.textContent})).concat(D.checks.filter(c=>c.level==="info").map(c=>({"序号":"","规则":c.text})));
   const res=await fetch("/v10/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cap,flt,ret,hist,note,prod,rules,cur:D.cur})});

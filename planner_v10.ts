@@ -857,13 +857,23 @@ export function analyze(a: AnalyzeArgs) {
       const so = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
       if (Math.abs(so) < 1) continue;
       const rt = (m ? rateFor(cp, m, p.name, cur, p.channel) : null) ?? poolRate(p, cur) ?? 0;
-      px.push([pid(sku), so, rt]);
+      // 第 4 位：TTS 折扣率上限表里这个 SKU 的点数（单品上限，和本池计算用的费率可能不同）
+      px.push([pid(sku), so, rt, skuRate(sku, cur, p.channel) ?? -1]);
     }
+    // 写新计划备注时要排除的 PL：同客户同渠道、本季度/后两月有占货的计划（同活动 + 其他活动产品有重叠的）
+    const exclSame = new Set<string>(), exclOther = new Map<string, string>();
+    for (const mm of futureMonths) {
+      if (!months[mm].inCP) continue;
+      for (const pl of p.occPlans[mm] || []) exclSame.add(pl);
+      for (const it of wallFee(p, mm).items) if (!exclSame.has(it.pl)) exclOther.set(it.pl, it.cp);
+    }
+    for (const pl of exclSame) exclOther.delete(pl);
+    const excl = { same: [...exclSame].sort(), other: [...exclOther.entries()].sort((x, y) => x[0].localeCompare(y[0])) };
     const sr = skuRows.map((r) => [pid(r.sku), ...r.v]);
     poolOut.push({
       id: p.id, broad: cp.broad, regional: cp.regional, recommend, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu,
       channel: p.channel, bucket: BUCKET_LABEL[p.bucket] ?? p.bucket, scope: info.scopeLabel, timedNote: info.timedNote,
-      stock: p.stock, forecast: f, months, hist, quarter, nextQ, recentMonths, sr, px,
+      stock: p.stock, forecast: f, months, hist, quarter, nextQ, recentMonths, sr, px, excl,
       plannable,
     });
   }
