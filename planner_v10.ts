@@ -128,7 +128,7 @@ type Meta = {
 type SORow = { channel: string; code: string; name: string; sku: string; months: Record<string, number> };
 type CP = {
   code: string; start: Date; end: Date; desc: string; mech: string; bu: string; mg1: string[]; sub: string;
-  balance: number; type: string; isDiscount: boolean; broad: boolean; regional: boolean;
+  balance: number; type: string; isDiscount: boolean; broad: boolean; regional: boolean; mg1Blank: number; fullBU: boolean;
 };
 type Plan = {
   pl: string; code: string; name: string; channel: string; cp: string; mg1: string; skus: string[]; skuNames: string[];
@@ -294,6 +294,10 @@ function parseCP(wb: any): CP[] {
     const mech = str(r, ix.mech);
     out.push({
       code, start, end, desc: str(r, ix.desc), mech, bu: buKey(cell(r, ix.bu)), mg1: list(cell(r, ix.mg1)).map(norm),
+      // 只有代码没有全称的品牌（如 OSW、OS6）导出时会丢，原位置留下空位
+      mg1Blank: String(cell(r, ix.mg1) ?? "").split(",").filter((x, i, arr) => !x.trim() && arr.length > 1).length,
+      // TT / WS / Sub-D 是本 BU 全品类，不按促销品牌过滤（避免导出丢品牌）
+      fullBU: /^(DA|CF|CO)\d+\w*?(TT|WS)$/i.test(code) || /sub[-_ ]?d/i.test(str(r, ix.desc)),
       sub: str(r, ix.sub), balance: num(cell(r, ix.bal)), type,
       isDiscount: type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech),
       // 自定义类 CP（MT TT、区域自主）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分
@@ -503,11 +507,11 @@ export function analyze(a: AnalyzeArgs) {
   const cpInfo = new Map<string, ReturnType<typeof buildScope> & { skus: Set<string>; unmatched: string[] }>();
   for (const cp of cps) {
     if (!CONFIG.targetBU.has(cp.bu)) continue;
-    const base = metaList.filter((m) => m.bu === cp.bu && (!cp.mg1.length || cp.mg1.some((g) => m.aliases.has(g))));
+    const base = metaList.filter((m) => m.bu === cp.bu && (cp.fullBU || !cp.mg1.length || cp.mg1.some((g) => m.aliases.has(g))));
     const sc = buildScope(cp, base);
     const skus = new Set(base.filter((m) => sc.allows(m) && !(cp.bu === "dairy" && CONFIG.dairyExcludeSKUs.has(m.sku))).map((m) => m.sku));
     const unmatched = cp.mg1.filter((g) => !metaList.some((m) => m.bu === cp.bu && m.aliases.has(g)));
-    cpInfo.set(cp.code, { ...sc, skus, unmatched });
+    cpInfo.set(cp.code, { ...sc, scopeLabel: cp.fullBU && sc.scopeLabel === "CP 全部品牌" ? "本 BU 全品类（TT/WS/Sub-D）" : sc.scopeLabel, skus, unmatched });
   }
   const clientOK = (cp: CP, name: string) => {
     const r = CONFIG.clientRestrict[cp.code];
@@ -1053,6 +1057,7 @@ export function analyze(a: AnalyzeArgs) {
   for (const cp of cps) {
     const info = cpInfo.get(cp.code);
     if (info?.itemMiss && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：机制写了限定产品「${info.itemMiss}」，但在产品目录里没对上，暂按 CP 全部品牌计算。` });
+    if (cp.mg1Blank && !cp.fullBU && cp.isDiscount && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：促销品牌里有 ${cp.mg1Blank} 个只有代码的品牌在导出时丢了（常见 OSW 新西兰乳粉、OS6 N3），网站按导出的品牌算，可能少算；以 TTS 预算分配页为准。` });
     if (info?.unmatched.length && cp.balance >= a.minBalance) checks.push({ level: "warn", text: `${cp.code}｜${cp.desc}：促销品牌「${info.unmatched.join("、")}」在 BI 产品目录找不到对应品牌，这部分产品未进入核销池。` });
   }
   const broadCPs = cps.filter((c) => c.broad && c.isDiscount && c.balance >= a.minBalance);
