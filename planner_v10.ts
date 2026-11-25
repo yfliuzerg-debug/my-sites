@@ -133,8 +133,8 @@ type CP = {
 type Plan = {
   pl: string; code: string; name: string; channel: string; cp: string; mg1: string; skus: string[]; skuNames: string[];
   start: Date; end: Date; promoStart: Date | null; promoEnd: Date | null; remarkDates: boolean;
-  orderAmount: number; rate: number; budget: number; balance: number; status: string; started: boolean;
-  done: boolean; cancelled: boolean; productRemark: string; remarks: string; bu: string;
+  orderAmount: number; rate: number; budget: number; balance: number; cgOcc: number; hasCgOcc: boolean; status: string; started: boolean;
+  done: boolean; finalReimb: boolean; cancelled: boolean; productRemark: string; remarks: string; bu: string;
 };
 type RateRow = { sku: string; start: Date; end: Date; rate: number; dddt: string; ws: boolean; created: number };
 
@@ -265,7 +265,7 @@ const CPA = {
   code: ["Activity Code", "活动编码"], start: ["Activity Start Date", "活动开始日期"], end: ["Activity End Date", "活动结束日期"],
   desc: ["Activity Description", "活动描述"], mech: ["Activity Mechanism", "活动机制"], bu: ["BU", "业务单元"],
   mg1: ["MG1", "促销品牌"], sub: ["SubChannel", "渠道"], bal: ["Balance Amount", "CG可使用预算金额"],
-  type: ["PromotionType", "模板类型"],
+  type: ["PromotionType", "模板类型"], budgetCode: ["Budget Code", "预算编码"],
 };
 function aliasIdx(h: any[], names: string[]) {
   const a = h.map((v) => String(v ?? "").trim());
@@ -292,6 +292,10 @@ function parseCP(wb: any): CP[] {
     if (!code || !start || !end) continue;
     const type = str(r, ix.type);
     const mech = str(r, ix.mech);
+    const budgetCode = str(r, ix.budgetCode);
+    const broad = /自定义/.test(type);
+    const isT018 = /T018/i.test(budgetCode);
+    const isT021 = /T021/i.test(budgetCode);
     out.push({
       code, start, end, desc: str(r, ix.desc), mech, bu: buKey(cell(r, ix.bu)), mg1: list(cell(r, ix.mg1)).map(norm),
       // 只有代码没有全称的品牌（如 OSW、OS6）导出时会丢，原位置留下空位
@@ -299,9 +303,9 @@ function parseCP(wb: any): CP[] {
       // TT / WS / Sub-D 是本 BU 全品类，不按促销品牌过滤（避免导出丢品牌）
       fullBU: /^(DA|CF|CO)\d+\w*?(TT|WS)$/i.test(code) || /sub[-_ ]?d/i.test(str(r, ix.desc)),
       sub: str(r, ix.sub), balance: num(cell(r, ix.bal)), type,
-      isDiscount: type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech),
-      // 自定义类 CP（MT TT、区域自主）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分
-      broad: /自定义/.test(type), regional: /区域自主/.test(str(r, ix.desc)),
+      isDiscount: (type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech)) || (broad && (isT018 || isT021)),
+      // 自定义类 CP（MT TT、区域自主、T018 订货会）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分
+      broad, regional: /区域自主/.test(str(r, ix.desc)) || isT018,
     });
   }
   return out;
@@ -322,14 +326,16 @@ function parseTTS(wb: any): Plan[] {
     const start = rsd || ps, end = red || pe;
     if (!start || !end) continue;
     const status = str(r, x["Status"]);
+    const finalReimb = str(r, x["Final reimbursement(Y/N)"]) === "是";
+    const hasCgOcc = x["CGOccupancyAmount"] != null;
     let p = by.get(pl);
     if (!p) {
       p = {
         pl, code: str(r, x["Distributor Code"]), name: str(r, x["Distributor Name"]), channel: str(r, x["Channel"]),
         cp: str(r, x["Activity Code in Cycle Plan"]), mg1: str(r, x["MG1"]), skus: [], skuNames: [],
         start, end, promoStart: ps, promoEnd: pe, remarkDates: !!(rsd && red),
-        orderAmount: 0, rate: parseRate(cell(r, x["Disc.Rate"])), budget: 0, balance: 0, status,
-        started: str(r, x["Whether to start off"]) === "是", done: /核销已完成/.test(status), cancelled: /撤销/.test(status),
+        orderAmount: 0, rate: parseRate(cell(r, x["Disc.Rate"])), budget: 0, balance: 0, cgOcc: 0, hasCgOcc, status,
+        started: str(r, x["Whether to start off"]) === "是", done: /核销已完成/.test(status) || finalReimb, finalReimb, cancelled: /撤销/.test(status),
         productRemark: str(r, x["Product Remark"]), remarks: str(r, x["Remarks"]), bu: buKey(cell(r, x["Business Name"])),
       };
       by.set(pl, p);
@@ -339,6 +345,7 @@ function parseTTS(wb: any): Plan[] {
     p.orderAmount += num(cell(r, x["Order Amount"]));
     p.budget += num(cell(r, x["Total Budget"]));
     p.balance += num(cell(r, x["Balance Amount"]));
+    if (hasCgOcc) p.cgOcc += num(cell(r, x["CGOccupancyAmount"]));
   }
   return [...by.values()];
 }
@@ -614,6 +621,11 @@ export function analyze(a: AnalyzeArgs) {
   for (const pl of plans) {
     if (pl.cancelled || pl.orderAmount <= 0 || pl.rate <= 0) continue;
     if (pl.bu && !CONFIG.targetBU.has(pl.bu)) continue;
+    // 已拍死计划按实际占用CG预算折算占货：零核销结案不占货，部分核销结案按 占用CG预算金额/预算合计 折算
+    const effOrderAmount = (pl.done && pl.hasCgOcc && pl.budget > 0)
+      ? (pl.cgOcc <= 0.01 ? 0 : pl.orderAmount * Math.min(1, Math.max(0, pl.cgOcc / pl.budget)))
+      : pl.orderAmount;
+    if (effOrderAmount <= 0) continue;
     const cp = cpBy.get(pl.cp);
     const info = cpInfo.get(pl.cp);
     const chans = biChannels.filter((c) => channelMatches(pl.channel, c));
@@ -627,7 +639,7 @@ export function analyze(a: AnalyzeArgs) {
       const s = new Date(Math.max(pl.start.getTime(), monthStart(mm).getTime()));
       const e = new Date(Math.min(pl.end.getTime(), monthEnd(mm).getTime()));
       const days = Math.round((e.getTime() - s.getTime()) / 864e5) + 1;
-      const amt = pl.orderAmount * days / totalDays;
+      const amt = effOrderAmount * days / totalDays;
       const cands = chans.map((c) => pools.get(`${capCode(pl.code)}|${pl.cp}|${c}|${bucket}`)).filter(Boolean) as Pool[];
       const parts: { pool: string; amount: number }[] = [];
       if (cp && info) {
