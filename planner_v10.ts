@@ -230,7 +230,7 @@ function parseBI(wb: any) {
       }
     }
   }
-  // SKURate：单品费率上限 + MG1 名称别名
+  // SKURate：单品费率上限 + MG1 名称与编码别名
   const rates: RateRow[] = [];
   if (wb.SheetNames.includes("SKURate")) {
     const rs = sheetRows(wb, "SKURate");
@@ -241,7 +241,11 @@ function parseBI(wb: any) {
         const sku = str(r, x["SKUCode"]);
         if (!sku) continue;
         const m = meta.get(sku);
-        if (m) fill(m, { bu: buKey(cell(r, x["BUName"])), name: str(r, x["SKUName"]) }, str(r, x["MG1Name"]));
+        if (m) {
+          fill(m, { bu: buKey(cell(r, x["BUName"])), name: str(r, x["SKUName"]) }, str(r, x["MG1Name"]));
+          const mg1c = str(r, x["MG1Code"]);
+          if (mg1c) m.aliases.add(norm(mg1c));
+        }
         const start = parseDate(cell(r, x["StartDate"])), end = parseDate(cell(r, x["EndDate"]));
         const rate = parseRate(cell(r, x["_RateValue"]) ?? cell(r, x["Rate"]));
         const rawRate = cell(r, x["_RateValue"]) ?? cell(r, x["Rate"]);
@@ -292,20 +296,38 @@ function parseCP(wb: any): CP[] {
     if (!code || !start || !end) continue;
     const type = str(r, ix.type);
     const mech = str(r, ix.mech);
+    const desc = str(r, ix.desc);
+    const bu = buKey(cell(r, ix.bu));
     const budgetCode = str(r, ix.budgetCode);
     const broad = /自定义/.test(type);
     const isT018 = /T018/i.test(budgetCode);
     const isT021 = /T021/i.test(budgetCode);
+    const mg1 = list(cell(r, ix.mg1)).map(norm);
+    // 只有代码没有全称的品牌（如 OSW、OS6、OSA、OSU）导出时会丢，原位置留下空位
+    const mg1Blank = String(cell(r, ix.mg1) ?? "").split(",").filter((x, i, arr) => !x.trim() && arr.length > 1).length;
+    const textAll = `${desc} ${mech}`;
+    if (mg1Blank > 0) {
+      const addG = (g: string) => { const k = norm(g); if (!mg1.includes(k)) mg1.push(k); };
+      if (bu === "dairy") {
+        const hasFamily = mg1.some((g) => ["cnnesprayfcmp", "cnnestlesmp", "cnnestleyiyunskim", "cnnestleyiyunhicalrfmp"].includes(g));
+        if (hasFamily || /新西兰|全家/.test(textAll)) addG("osw");
+        if (/N3/i.test(textAll) || (hasFamily && mg1.length >= 8)) {
+          for (const g of ["os6", "os7", "osp", "ot2"]) addG(g);
+        }
+      } else if (bu === "confectionery") {
+        addG("osa");
+      } else if (bu === "coffee") {
+        if (mg1.some((g) => g.includes("starbucks")) || /星巴克|starbucks/i.test(textAll)) addG("osu");
+      }
+    }
     out.push({
-      code, start, end, desc: str(r, ix.desc), mech, bu: buKey(cell(r, ix.bu)), mg1: list(cell(r, ix.mg1)).map(norm),
-      // 只有代码没有全称的品牌（如 OSW、OS6）导出时会丢，原位置留下空位
-      mg1Blank: String(cell(r, ix.mg1) ?? "").split(",").filter((x, i, arr) => !x.trim() && arr.length > 1).length,
-      // TT / WS / Sub-D 是本 BU 全品类，不按促销品牌过滤（避免导出丢品牌）
-      fullBU: /^(DA|CF|CO)\d+\w*?(TT|WS)$/i.test(code) || /sub[-_ ]?d/i.test(str(r, ix.desc)),
+      code, start, end, desc, mech, bu, mg1, mg1Blank,
+      // TT / WS / Sub-D / 区域自主 / 订货会（T018/T021 宽口径）是本 BU 全品类，不按促销品牌过滤（避免导出丢品牌）
+      fullBU: /^(DA|CF|CO)\d+\w*?(TT|WS)$/i.test(code) || /sub[-_ ]?d/i.test(desc) || (broad && (isT018 || isT021)),
       sub: str(r, ix.sub), balance: num(cell(r, ix.bal)), type,
       isDiscount: (type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech)) || (broad && (isT018 || isT021)),
-      // 自定义类 CP（MT TT、区域自主、T018 订货会）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分
-      broad, regional: /区域自主/.test(str(r, ix.desc)) || isT018,
+      // 自定义类 CP（MT TT、区域自主、T018 订货会）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分；仅"区域自主"有排他 CP 墙
+      broad, regional: /区域自主/.test(desc),
     });
   }
   return out;
@@ -401,12 +423,6 @@ function buildScope(cp: CP, pool: Meta[]) {
       else if (items.length) itemMiss = phrase.trim();
     }
   }
-  const dairyExplicit: string[] = [];
-  if (cp.bu === "dairy") {
-    if (/新西兰/.test(cp.mech)) dairyExplicit.push("新西兰");
-    if (/全脂375g/.test(cp.mech)) dairyExplicit.push("全脂375g");
-    if (/甜奶粉/.test(cp.mech)) dairyExplicit.push("甜奶粉300g");
-  }
   const timed: { from: string; channel: string; label: string }[] = [];
   for (const m of text.matchAll(/(\d{1,2})月(\d{1,2})日起[^。；;]*?(SM|HM|WS|MM)门店不得核销\s*([0-9A-Za-z_.\-]+)/g)) {
     timed.push({ from: `${cp.start.getFullYear()}${String(+m[1]).padStart(2, "0")}`, channel: norm(m[3]), label: norm(m[4]) });
@@ -417,12 +433,11 @@ function buildScope(cp: CP, pool: Meta[]) {
     if (rule === "ip") return norm(m.s3) === "ip";
     if (itemMatch) return itemMatch(m);
     if (labels) return [m.s1, m.s2, m.s3].some((v) => labels!.has(norm(v)));
-    if (dairyExplicit.length) return dairyExplicit.some((v) => m.s3.includes(v));
     return true;
   };
   const timedOut = (m: Meta, channel: string, mm: string) =>
     timed.some((t) => t.channel === norm(channel) && mm >= t.from && [m.sku, m.s1, m.s2, m.s3].some((v) => norm(v) === t.label));
-  const scopeLabel = rule === "pnm-coated" ? "PNM-Coated" : rule === "ip" ? "IP口味" : itemMatch ? `限定：${itemLabel}` : labels ? `限定：${[...labels].join("/")}` : dairyExplicit.length ? `限定：${dairyExplicit.join("/")}` : "CP 全部品牌";
+  const scopeLabel = rule === "pnm-coated" ? "PNM-Coated" : rule === "ip" ? "IP口味" : itemMatch ? `限定：${itemLabel}` : labels ? `限定：${[...labels].join("/")}` : "CP 全部品牌";
   return { allows, timedOut, scopeLabel, itemMiss, timedNote: timed.map((t) => `${t.from.slice(4)}月起${t.channel.toUpperCase()}不含${t.label}`).join("；") };
 }
 
@@ -518,7 +533,7 @@ export function analyze(a: AnalyzeArgs) {
     const sc = buildScope(cp, base);
     const skus = new Set(base.filter((m) => sc.allows(m) && !(cp.bu === "dairy" && CONFIG.dairyExcludeSKUs.has(m.sku))).map((m) => m.sku));
     const unmatched = cp.mg1.filter((g) => !metaList.some((m) => m.bu === cp.bu && m.aliases.has(g)));
-    cpInfo.set(cp.code, { ...sc, scopeLabel: cp.fullBU && sc.scopeLabel === "CP 全部品牌" ? "本 BU 全品类（TT/WS/Sub-D）" : sc.scopeLabel, skus, unmatched });
+    cpInfo.set(cp.code, { ...sc, scopeLabel: cp.fullBU && sc.scopeLabel === "CP 全部品牌" ? "本 BU 全品类（TT/WS/Sub-D/区域自主/订货会）" : sc.scopeLabel, skus, unmatched });
   }
   const clientOK = (cp: CP, name: string) => {
     const r = CONFIG.clientRestrict[cp.code];
