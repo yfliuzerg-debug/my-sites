@@ -68,7 +68,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 .wb-cap .fill{cursor:pointer;text-decoration:underline dotted}.wb-cap .fill:hover{color:var(--brand)}
 .wb-cap .chbtn{border:1px solid var(--line);background:#fafbfd;border-radius:5px;padding:0 5px;font-size:11px;cursor:pointer;color:var(--ink)}
 .wb-cap .chbtn:hover{border-color:var(--brand);color:var(--brand)}
-.wb-colh{min-width:128px}.wb-colh .nm{font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:4px}
+.wb-colh{min-width:116px}.wb-colh .nm{font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:4px}
 .wb-colh .ops button{border:0;background:none;cursor:pointer;color:var(--muted);padding:0 3px;font-size:12px}.wb-colh .ops button:hover{color:var(--red)}
 .wb-ms{display:flex;flex-wrap:wrap;gap:2px;margin-top:4px}
 .wb-ms button{border:1px solid var(--line);background:#fff;border-radius:4px;padding:0 4px;font-size:10.5px;cursor:pointer;color:var(--muted)}
@@ -161,7 +161,8 @@ function allocMap(i){const by=new Map();D.pools.filter(p=>p.plannable).forEach(p
 // CP 还能接住多少回流 = 这个 CP 下所有客户本季度承载 − CP 现有余额（基准档）
 function absorb(cp){const ps=D.pools.filter(p=>p.cp===cp);if(!ps.length)return null;return ps.reduce((s,p)=>s+rowQ(p,1),0)-Math.max(0,ps[0].cpBalance)}
 function destOf(cp,skip){const agg=new Map();D.pools.filter(p=>p.cp===cp&&p.name!==skip).forEach(p=>{const k=p.name+'|'+p.channel;agg.set(k,{name:p.name,ch:p.channel,v:(agg.get(k)?agg.get(k).v:0)+rowQ(p,1)})});return [...agg.values()].filter(d=>d.v>=100).sort((a,b)=>b.v-a.v)}
-const short=n=>String(n||'').replace(/有限(责任)?公司$/,'').replace(/^(深圳市|东莞市|广州市?)/,'');
+const SHORT_ALIAS=[['东方配销','东方'],['天虹','天虹'],['沃尔玛','沃尔玛'],['山姆','山姆'],['宏耐汇之泽','宏耐']];
+const short=n=>{let s=String(n||'').trim();for(const [k,v] of SHORT_ALIAS)if(s.includes(k))return v;s=s.replace(/^(?:(?:广东|陕西|江苏|湖南|浙江|福建|四川|湖北|河南|河北|山东)省?)?(?:(?:深圳|东莞|广州|佛山|惠州|中山|珠海|江门|南京|长沙|西安)市?)?(?:(?:龙岗|宝安|南山|福田|罗湖|龙华|光明|坪山|盐田)区)?/,'').replace(/[（(][^）)]*[）)]/g,'').replace(/第[一二三四五六七八九十\\d]+分公司$/,'');const suf=/(?:股份有限公司|有限责任公司|有限公司|集团|投资发展|贸易发展|数科商业|食品饮料|生物科技|供应链|科技|商贸|贸易|实业|商业|饮料|食品|配销|投资|发展|股份)$/;while(true){const ns=s.replace(suf,'');if(ns!==s&&ns.length>=2)s=ns;else break}return s.length>4?s.slice(0,4):s};
 // 同一 CP 的余额在全部客户之间共用：合计时按 CP 封顶
 function capped(ps,i){const by=new Map();ps.forEach(p=>{const x=by.get(p.cp)||{v:0,b:p.cpBalance};x.v+=rowQ(p,i);by.set(p.cp,x)});let t=0;by.forEach(x=>t+=Math.min(x.v,Math.max(0,x.b)));return t}
 
@@ -445,6 +446,7 @@ function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(_){}}
 const WBP=loadJSON(WB_PREF_KEY,null)||{cols:ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}))};
 // 确保至少有列
 if(!WBP.cols||!WBP.cols.length)WBP.cols=ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}));
+WBP.cols.forEach(c=>{const sh=short(c.name);if(!c.sub)c.label=sh;else if(c.label&&c.label.includes('-')){const p=c.label.split('-').slice(1).join('-');if(p)c.label=sh+'-'+p}});
 
 const WBD=loadJSON(WB_DRAFT_KEY,null)||{
   alloc:{},      // "cp|colId" -> number
@@ -547,7 +549,7 @@ function renderWb(){
   // 工具条
   html+='<div class="bar">'+
     '<div class="seg" id="wbType"><button data-v="all" class="'+(S.wbType==='all'?'on':'')+'">全部</button><button data-v="disc" class="'+(S.wbType==='disc'?'on':'')+'">仅折扣</button><button data-v="disp" class="'+(S.wbType==='disp'?'on':'')+'">仅陈列/上市</button></div>'+
-    '<select id="wbAddCust" style="max-width:190px"><option value="">+ 移入客户列…</option>'+addableCusts.map(c=>'<option value="'+h(c.code)+'">'+h(short(c.name))+' ('+wan(c.histFee)+')</option>').join('')+'</select>'+
+    '<select id="wbAddCust" style="max-width:190px"><option value="">+ 移入客户列…</option>'+addableCusts.map(c=>'<option value="'+h(c.code)+'">'+h(short(c.name))+' · '+h(c.code)+' ('+wan(c.histFee)+')</option>').join('')+'</select>'+
     '<button class="btn" id="wbAddSub">+ 添加对账子列</button>'+
     '<select id="wbAddZero" style="max-width:220px"><option value="">+ 调入0余额常见CP…</option>'+zeroCps.slice(0,40).map(c=>'<option value="'+h(c.code)+'">'+h(c.code+' '+c.desc)+(c.histBudget?' · 历史'+wan(c.histBudget):'')+'</option>').join('')+'</select>'+
     '<span class="sp" style="flex:1"></span>'+
@@ -563,7 +565,8 @@ function renderWb(){
   cols.forEach((col,idx)=>{
     const ms=colMonths(col.id);
     const allM=[...HIST_MONTHS,...FUT_MONTHS];
-    html+='<th class="wb-colh"><div class="nm"><span>'+h(col.label)+(col.sub?' <span class="chip nodata">子列</span>':'')+'</span><span class="ops">'+
+    const dupN=cols.filter(x=>!x.sub&&!col.sub&&x.label===col.label).length>1;const dispNm=dupN?col.label+'·'+String(col.code).slice(-4):col.label;
+    html+='<th class="wb-colh" title="'+h(col.name)+' ('+h(col.code)+')"><div class="nm"><span>'+h(dispNm)+(col.sub?' <span class="chip nodata">子列</span>':'')+'</span><span class="ops">'+
       (idx>0?'<button data-mv="'+idx+'" data-d="-1" title="左移">‹</button>':'')+
       (idx<cols.length-1?'<button data-mv="'+idx+'" data-d="1" title="右移">›</button>':'')+
       '<button data-rm="'+h(col.id)+'" title="移出本轮">×</button></span></div>'+
@@ -720,7 +723,7 @@ function openChModal(key){
 
 function csvCell(v){const s=String(v??'').replace(/"/g,'""');return /[",\\n\\r]/.test(s)?'"'+s+'"':s}
 function exportWbCsv(){
-  const headers=['客户编码','客户名称','对账子列','CP号','活动名','BU','活动类型','资金来源','渠道','归属月份','拟分金额(元)','费率','对应需出货(元)','主推SKU','主推产品名','推荐产品组','需排除PL','活动日期','适用渠道(CP)','促销品牌(MG1)','活动机制','备注草稿'];
+  const headers=['客户编码','客户名称','客户简称','对账子列','CP号','活动名','BU','活动类型','资金来源','渠道','归属月份','拟分金额(元)','费率','对应需出货(元)','主推SKU','主推产品名','推荐产品组','需排除PL','活动日期','适用渠道(CP)','促销品牌(MG1)','活动机制','备注草稿'];
   const rows=[];
   const cps=D.allCps||[];
   for(const cp of cps){
@@ -731,7 +734,7 @@ function exportWbCsv(){
       const amt=Number(WBD.alloc[key])||0;
       if(amt<=0)continue;
       if(!cp.isDiscount){
-        rows.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,cp.type||'陈列/上市',srcTag,'',colMonths(col.id).map(mlabel).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
+        rows.push([col.code,col.name,short(col.name),col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,cp.type||'陈列/上市',srcTag,'',colMonths(col.id).map(mlabel).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
         continue;
       }
       const bd=cellBreakdown(cp.code,col);
@@ -750,7 +753,7 @@ function exportWbCsv(){
           const top=(p.recommend&&p.recommend[0]&&p.recommend[0].top)||{};
           const excl=[...(p.excl?p.excl.same:[]),...(p.excl?p.excl.other.map(z=>z[0]):[])];
           const note=(col.sub?'客户组/对账：'+col.sub+'；':'')+(mm<D.cur?'历史回溯月；':'')+(excl.length?'不得与以下PL重复：'+excl.join('、'):'');
-          parts.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,x.channel,mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',top.sku||'',top.name||'',(p.recommend||[]).slice(0,3).map(g=>g.group).join('、'),excl.join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,note]);
+          parts.push([col.code,col.name,short(col.name),col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,x.channel,mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',top.sku||'',top.name||'',(p.recommend||[]).slice(0,3).map(g=>g.group).join('、'),excl.join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,note]);
         });
       });
       // LKA/KAC 通道：若全选了所有 >=500 的 KAC，合并为简洁 LKA Others；否则写具体客户组
@@ -765,11 +768,11 @@ function exportWbCsv(){
           const k0=selKac[0].kac;
           const rt=mm<D.cur?((k0.hist.find(z=>z.mm===mm)||{}).rate):(k0.months[mm]&&k0.months[mm].rate);
           const kacNote=isGeneric?'LKA聚合('+selKac.length+'个KAC·'+Math.round(S.kacRate*100)+'%)':'客户组：'+selKac.map(x=>x.kacName).join('、')+'（'+Math.round(S.kacRate*100)+'%）';
-          parts.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣(LKA)',srcTag,'LKA Others',mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',k0.topSku||'',k0.topSkuName||'',selKac.map(x=>x.kacName).join('、'),(k0.exclSame||[]).join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,kacNote]);
+          parts.push([col.code,col.name,short(col.name),col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣(LKA)',srcTag,'LKA Others',mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',k0.topSku||'',k0.topSkuName||'',selKac.map(x=>x.kacName).join('、'),(k0.exclSame||[]).join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,kacNote]);
         });
       }
       if(!parts.length){
-        rows.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,'待定',colMonths(col.id).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
+        rows.push([col.code,col.name,short(col.name),col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,'待定',colMonths(col.id).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
       }else rows.push(...parts);
     }
   }
