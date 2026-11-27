@@ -1,4 +1,4 @@
-// 费用规划助手 v10 页面：上传页 + 结果页（能做多少费用 / 在途计划·督促出货 / 数据说明）
+// 费用规划助手 v10 页面：上传页 + 结果页（费用分配台 / 能做多少费用 / 在途计划·督促出货 / 数据说明）
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const CSS = `
@@ -54,12 +54,42 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 .upl input[type=date],.upl input[type=number]{padding:7px 9px;border:1px solid var(--line);border-radius:8px}
 .loading{display:none;position:fixed;inset:0;background:rgba(255,255,255,.85);z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:8px;font-weight:600}
 .loading.on{display:flex}.spin{width:34px;height:34px;border:3px solid var(--brand-soft);border-top-color:var(--brand);border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+.wb-wrap{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:12px;margin-bottom:12px}
+.wb-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.wb-tbl th,.wb-tbl td{padding:6px 8px;border:1px solid #ebeff5;vertical-align:top}
+.wb-tbl th{background:#f8fafc;position:sticky;top:0;z-index:2}
+.wb-tbl th.fix,.wb-tbl td.fix{position:sticky;left:0;background:#fff;z-index:1;min-width:190px;max-width:230px}
+.wb-tbl th.fix{background:#f8fafc;z-index:3}
+.wb-in{width:86px;padding:4px 6px;border:1px solid #cfd8e6;border-radius:6px;text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums}
+.wb-in.over{border-color:var(--red);background:var(--red-soft);color:var(--red);font-weight:700}
+.wb-in.add{width:76px;border-style:dashed;background:#fffdf5}
+.wb-cap{font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;justify-content:space-between;gap:4px;white-space:nowrap}
+.wb-cap .fill{cursor:pointer;text-decoration:underline dotted}.wb-cap .fill:hover{color:var(--brand)}
+.wb-cap .chbtn{border:1px solid var(--line);background:#fafbfd;border-radius:5px;padding:0 5px;font-size:11px;cursor:pointer;color:var(--ink)}
+.wb-cap .chbtn:hover{border-color:var(--brand);color:var(--brand)}
+.wb-colh{min-width:128px}.wb-colh .nm{font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:4px}
+.wb-colh .ops button{border:0;background:none;cursor:pointer;color:var(--muted);padding:0 3px;font-size:12px}.wb-colh .ops button:hover{color:var(--red)}
+.wb-ms{display:flex;flex-wrap:wrap;gap:2px;margin-top:4px}
+.wb-ms button{border:1px solid var(--line);background:#fff;border-radius:4px;padding:0 4px;font-size:10.5px;cursor:pointer;color:var(--muted)}
+.wb-ms button.on{background:var(--brand-soft);border-color:#9dbcf8;color:var(--brand);font-weight:600}
+.wb-ms button.hist.on{background:var(--amber-soft);border-color:#e5bd78;color:var(--amber)}
+.wb-rem.done{color:var(--green);font-weight:700}.wb-rem.over{color:var(--red);font-weight:700}
+.wb-warn{font-size:10.5px;color:var(--amber);background:var(--amber-soft);border-radius:4px;padding:1px 4px;margin-top:2px;line-height:1.3}
+.kac-box{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:12.5px}
+.kac-box.on{border-color:#9dbcf8;background:var(--brand-soft)}
+.kac-box input[type=number]{width:52px;padding:2px 5px;border:1px solid var(--line);border-radius:6px;font-size:12px}
+.modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.42);z-index:60;display:none;align-items:center;justify-content:center;padding:16px}
+.modal-bg.on{display:flex}
+.modal{background:#fff;border-radius:12px;max-width:520px;width:100%;max-height:82vh;overflow:auto;padding:16px 18px;box-shadow:0 12px 32px rgba(0,0,0,.18)}
+.modal h3{margin:0 0 8px;font-size:15px}.modal .m-row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f0f2f6;font-size:13px}
+.modal .m-row label{display:flex;align-items:center;gap:6px;cursor:pointer;flex:1}
+.modal .m-sec{font-size:12px;font-weight:700;color:var(--muted);margin:10px 0 4px}
 @media (max-width:760px){.hide-m{display:none}.kpis{grid-template-columns:1fr 1fr}.kpi .v{font-size:18px}.upl .f{grid-template-columns:1fr}}
 `;
 
 export function uploadPage(defaultDate: string, message = "") {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>费用规划助手</title><style>${CSS}</style></head><body>
-<div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta">还能做多少费用 · 催出货 · 核不掉的钱转给谁</span><span class="sp"></span><a class="btn" href="/legacy">旧版</a><a class="btn" href="/logout">退出</a></div></div>
+<div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta">费用分配台 · 还能做多少费用 · 催出货 · 核不掉的钱转给谁</span><span class="sp"></span><a class="btn" href="/legacy">旧版</a><a class="btn" href="/logout">退出</a></div></div>
 <form class="upl" action="/v10/analyze" method="post" enctype="multipart/form-data" onsubmit="document.getElementById('ld').classList.add('on')">
 <h2>上传三份文件</h2><div class="sub">BI 出货库存表、TTS 计划大表、CP 预算表。文件只用来算这一次，不会保存。</div>
 ${message ? `<div class="chip risk" style="margin-top:10px">${esc(message)}</div>` : ""}
@@ -81,21 +111,22 @@ export function resultPage(data: unknown) {
 <div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta" id="meta"></span><span class="sp"></span>
 <button class="btn" id="exp">导出 Excel</button><a class="btn" href="/workspace">重新上传</a><a class="btn" href="/legacy">旧版</a></div></div>
 <div class="wrap">
-<div class="tabs"><div class="tab on" data-t="cap">还能做多少费用</div><div class="tab" data-t="flt">催出货<span class="n" id="redN"></span></div><div class="tab" data-t="chk">数据说明</div></div>
+<div class="tabs"><div class="tab on" data-t="wb">费用分配台</div><div class="tab" data-t="cap">还能做多少费用</div><div class="tab" data-t="flt">催出货<span class="n" id="redN"></span></div><div class="tab" data-t="chk">数据说明</div></div>
 <div class="bar">
 <select id="fCust"><option value="">全部客户</option></select>
 <select id="fCP" style="max-width:260px"><option value="">全部活动（CP）</option></select>
 <div class="seg" id="fBU"><button data-v="" class="on">全部</button><button data-v="dairy">奶品</button><button data-v="coffee">咖啡</button><button data-v="confectionery">糖果</button></div>
 <input type="search" id="fQ" placeholder="搜活动名 / CP 号 / PL 号 / 产品" style="min-width:220px">
 <span class="sp" style="flex:1"></span>
+<label class="kac-box" id="kacBox" title="开启后并入 BI-SO(折扣)-KAC 独立 LKA 通道（不与 SM/MM 互斥），默认按 30% 控制占比"><input type="checkbox" id="kacOn"><span>LKA/KAC通道</span><span id="kacCtrl" style="display:none"><button type="button" class="btn" data-kr="30" style="padding:2px 6px;font-size:11.5px">30%</button> <button type="button" class="btn" data-kr="50" style="padding:2px 6px;font-size:11.5px">50%</button> <input type="number" id="kacPct" value="30" min="1" max="100" step="5">%</span></label>
 <span class="sub" id="scLbl">按哪种情况估</span><div class="seg" id="fSc"><button data-v="0">保守 85%</button><button data-v="1" class="on">基准 100%</button><button data-v="2">乐观 120%</button></div>
 </div>
-<div id="v-cap"></div><div id="v-flt" style="display:none"></div><div id="v-chk" style="display:none"></div>
+<div id="v-wb"></div><div id="v-cap" style="display:none"></div><div id="v-flt" style="display:none"></div><div id="v-chk" style="display:none"></div><div class="modal-bg" id="wbModal"><div class="modal" id="wbModalIn"></div></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 const D=${json};
-const S={cust:"",cp:"",bu:"",q:"",sc:1,tab:"cap",fv:"chase",thr:500,open:new Set(),pf:{brand:"",s1:"",s2:"",s3:"",sku:""}};
+const S={cust:"",cp:"",bu:"",q:"",sc:1,tab:"wb",fv:"chase",thr:500,open:new Set(),pf:{brand:"",s1:"",s2:"",s3:"",sku:""},kacOn:false,kacRate:0.3,wbType:"all"};
 const PM=D.prod||[];// [SKU,名称,Brand,S1,S2,S3]
 D.pools.forEach(p=>{p.skuRows=(p.sr||[]).map(a=>({sku:PM[a[0]][0],name:PM[a[0]][1],brand:PM[a[0]][2],s1:PM[a[0]][3],s2:PM[a[0]][4],v:a.slice(1)}));p.px=p.px||[]});
 const fmt=new Intl.NumberFormat("zh-CN",{maximumFractionDigits:0});
@@ -146,7 +177,7 @@ function pfBar(cands){
 // ───────── 能做多少费用 ─────────
 function renderCap(){
   const el=document.getElementById("v-cap");const i=S.sc;
-  const cands=D.pools.filter(p=>p.plannable&&match(p,poolText(p)));
+  const cands=[...D.pools,...(S.kacOn?kacCapPools():[])].filter(p=>p.plannable&&match(p,poolText(p)));
   const SH=new Map(cands.map(p=>[p.id,share(p)]));const sh=p=>SH.has(p.id)?SH.get(p.id):share(p);
   const rq=(p,j)=>rowQ(p,j)*sh(p),rn=(p,j)=>rowN(p,j)*sh(p),fo=(p,m,j)=>feeOf(p,m,j)*sh(p);
   let rows=cands.filter(p=>!pfOn()||sh(p)>0);
@@ -305,7 +336,6 @@ function fltDetail(o){
    '<tr><td>这些货已经出了（扣了退货）</td><td class="n">'+money(o.gross)+'</td></tr>'+
    (o.packN>1?'<tr><td>同活动的几条计划</td><td>共 '+o.packN+' 条（'+o.packRates.map(pct).join('、')+'），货可以互相挪，先给点数高的。这条排第 '+o.packRank+'</td></tr>':'')+
    (o.peerDone?'<tr><td>减：点数更高的计划或已核销的计划先用掉的货</td><td class="n neg">− '+money(o.peerDone)+'</td></tr>':'')+
-   
    '<tr><td>算给这条计划的货</td><td class="n"><b>'+money(o.avail)+'</b></td></tr>'+
    (!o.closed?'<tr><td>到期前预计还能出</td><td class="n">'+money(o.fcst)+'<div class="sub">'+(o.projBasis==="pace"?'按本月每天 '+money(o.paceDaily)+' 的速度算':'按以前月份平均算')+'</div></td></tr>':'')+
    (o.perMonth&&o.perMonth.length>1?'<tr><td>每个月（计划要 / 已出）</td><td class="n">'+o.perMonth.map(x=>mlabel(x.mm)+' '+money(x.need)+' / '+money(x.avail)).join('<br>')+'</td></tr>':'')+
@@ -355,10 +385,397 @@ function renderChk(){
 function cpOpts(){const m=new Map();[...D.pools.filter(p=>p.plannable),...D.open].forEach(x=>{if(S.cust&&x.name!==S.cust)return;if(S.bu&&x.bu&&x.bu!==S.bu)return;if(!m.has(x.cp))m.set(x.cp,x.cpDesc||"")});
   if(S.cp&&!m.has(S.cp))S.cp="";const el=document.getElementById("fCP");
   el.innerHTML='<option value="">全部活动（CP）</option>'+[...m.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([c,d])=>'<option value="'+h(c)+'"'+(S.cp===c?' selected':'')+'>'+h(c+' '+d)+'</option>').join("")}
+
+// ───────── LKA/KAC 独立通道（默认关闭，开后按 S.kacRate 折算并过滤 <500 碎 KAC） ─────────
+function kacCapPools(){
+  const raw=(D.kacPools||[]).filter(k=>k.plannable);
+  const by=new Map();
+  const r=S.kacRate;
+  raw.forEach(k=>{
+    const q1=qMonths.reduce((s,m)=>s+((k.months[m]&&k.months[m].fee[1])||0)*r,0);
+    if(q1<500)return;
+    const key=k.code+'|'+k.cp+'|'+k.bucket;
+    let g=by.get(key);
+    if(!g){
+      g={id:'LKA|'+key,code:k.code,name:k.name,cp:k.cp,cpDesc:k.cpDesc,cpBalance:k.cpBalance,cpEnd:k.cpEnd,bu:k.bu,
+        channel:'LKA(KAC聚合)',bucket:k.bucket,scope:k.scope,broad:k.broad,regional:k.regional,plannable:true,
+        kacItems:[],skuRows:[],px:[],recommend:[],hist:[],excl:{same:[],other:[]},
+        forecast:{mtd:0,remain:0,base:0,s1:1,s2:1,invF:1,last3:[0,0,0],ly:[0,0,0],stock:0,weeks:null},
+        recentMonths:[addM(D.cur,-3),addM(D.cur,-2),addM(D.cur,-1),D.cur],
+        months:Object.fromEntries([D.cur,D.m1,D.m2].map(m=>[m,{inCP:k.months[m].inCP,rate:k.months[m].rate,actual:0,occ:0,occFee:0,occN:0,carryIn:[0,0,0],so:[0,0,0],rem:[0,0,0],fee:[0,0,0],gap:[0,0,0],carryOut:[0,0,0],wall:0,wallItems:[]}]))};
+      by.set(key,g);
+    }
+    g.kacItems.push({kacName:k.kacName,fee:q1});
+    [D.cur,D.m1,D.m2].forEach(m=>{
+      const km=k.months[m],gm=g.months[m];
+      if(!km)return;
+      gm.actual+=km.actual||0;gm.occ+=km.occ||0;gm.occFee+=km.occFee||0;gm.occN+=km.occN||0;
+      for(let j=0;j<3;j++){gm.so[j]+=km.so[j];gm.rem[j]+=km.rem[j];gm.fee[j]+=km.fee[j]*r}
+    });
+  });
+  return [...by.values()].map(g=>{
+    g.channel='LKA('+(g.kacItems.length)+'个KAC·'+Math.round(r*100)+'%)';
+    g.recommend=g.kacItems.sort((a,b)=>b.fee-a.fee).slice(0,5).map(x=>({group:x.kacName,so:0,fee:x.fee,top:{sku:'',name:x.kacName,so:0}}));
+    return g;
+  });
+}
+
+// ───────── 费用分配台（矩阵工作台 + 陈列一鱼双吃 + 渠道/KAC勾选 + 临时追加 + 批次隔离草稿 + AI导出包） ─────────
+const WB_PREF_KEY='ep_v10_wb_prefs_v1';
+const WB_DRAFT_KEY='ep_v10_wb_draft_'+(D.batchKey||D.dataDate);
+const ALL_CUSTS=(()=>{
+  const by=new Map();
+  (D.custRank||[]).forEach(c=>{if(c.code&&!by.has(c.code))by.set(c.code,{code:c.code,name:c.name,histFee:c.fee||0})});
+  (D.pools||[]).forEach(p=>{if(p.code&&!by.has(p.code))by.set(p.code,{code:p.code,name:p.name,histFee:0})});
+  return [...by.values()].sort((a,b)=>b.histFee-a.histFee||a.name.localeCompare(b.name,'zh-CN'));
+})();
+const HIST_MONTHS=(()=>{
+  const s=new Set();
+  (D.pools||[]).forEach(p=>(p.hist||[]).forEach(x=>s.add(x.mm)));
+  return [...s].sort();
+})();
+const FUT_MONTHS=[D.cur,D.m1,D.m2];
+const DEFAULT_MONTHS=FUT_MONTHS.filter(m=>m<=D.qEnd);
+
+function loadJSON(k,def){try{const v=localStorage.getItem(k);return v?JSON.parse(v):def}catch(_){return def}}
+function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(_){}}
+
+const WBP=loadJSON(WB_PREF_KEY,null)||{cols:ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}))};
+if(!WBP.cols||!WBP.cols.length)WBP.cols=ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}));
+
+const WBD=loadJSON(WB_DRAFT_KEY,null)||{
+  alloc:{},
+  add:{},
+  extraCps:[],
+  months:{},
+  chSel:{},
+};
+function saveWBP(){saveJSON(WB_PREF_KEY,WBP)}
+function saveWBD(){saveJSON(WB_DRAFT_KEY,WBD)}
+function colMonths(colId){return WBD.months[colId]&&WBD.months[colId].length?WBD.months[colId]:DEFAULT_MONTHS}
+
+function cellBreakdown(cpCode,col){
+  const ms=colMonths(col.id);
+  const sc=S.sc;
+  const ov=WBD.chSel[cpCode+'|'+col.id]||{};
+  const chs=[];
+  D.pools.filter(p=>p.cp===cpCode&&p.code===col.code).forEach(p=>{
+    const perM={};let tot=0;
+    ms.forEach(mm=>{
+      let f=0;
+      if(mm<D.cur){const hx=(p.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee):0}
+      else{const cm=p.months&&p.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0):0}
+      if(f>0){perM[mm]=f;tot+=f}
+    });
+    if(tot<1)return;
+    const checked=ov[p.id]!=null?!!ov[p.id]:tot>=500;
+    chs.push({id:p.id,kind:'ch',label:p.channel+(p.bucket?'·'+p.bucket:''),channel:p.channel,bucket:p.bucket||'',fee:tot,perM,checked,pool:p});
+  });
+  const kacs=[];
+  if(S.kacOn){
+    const r=S.kacRate;
+    (D.kacPools||[]).filter(k=>k.cp===cpCode&&k.code===col.code).forEach(k=>{
+      const perM={};let tot=0;
+      ms.forEach(mm=>{
+        let f=0;
+        if(mm<D.cur){const hx=(k.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee)*r:0}
+        else{const cm=k.months&&k.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0)*r:0}
+        if(f>0){perM[mm]=f;tot+=f}
+      });
+      if(tot<1)return;
+      const checked=ov[k.id]!=null?!!ov[k.id]:tot>=500;
+      kacs.push({id:k.id,kind:'kac',label:k.kacName+(k.bucket?'·'+k.bucket:''),kacName:k.kacName,bucket:k.bucket||'',fee:tot,perM,checked,kac:k});
+    });
+  }
+  chs.sort((a,b)=>b.fee-a.fee);
+  kacs.sort((a,b)=>b.fee-a.fee);
+  const capCh=chs.filter(x=>x.checked).reduce((s,x)=>s+x.fee,0);
+  const capKac=kacs.filter(x=>x.checked).reduce((s,x)=>s+x.fee,0);
+  return {chs,kacs,cap:capCh+capKac,capCh,capKac};
+}
+
+function wbRows(){
+  const all=D.allCps||[];
+  const extra=new Set(WBD.extraCps||[]);
+  return all.filter(c=>{
+    if(S.bu&&c.bu!==S.bu)return false;
+    if(S.wbType==='disc'&&!c.isDiscount)return false;
+    if(S.wbType==='disp'&&c.isDiscount)return false;
+    if(S.cp&&c.code!==S.cp)return false;
+    if(S.q&&!(c.code+' '+c.desc+' '+c.mech).toLowerCase().includes(S.q.toLowerCase()))return false;
+    return c.balance>=D.minBalance||extra.has(c.code)||(Number(WBD.add[c.code])||0)>0;
+  });
+}
+
+function renderWb(){
+  const el=document.getElementById("v-wb");
+  const cps=wbRows();
+  const cols=WBP.cols;
+  const addableCusts=ALL_CUSTS.filter(c=>!cols.some(x=>x.id===c.code));
+  const zeroCps=(D.allCps||[]).filter(c=>c.balance<D.minBalance&&!(WBD.extraCps||[]).includes(c.code)&&(!S.bu||c.bu===S.bu));
+
+  const nonRegByCust=new Map();
+  (D.allCps||[]).forEach(c=>{
+    if(!c.isDiscount||c.regional)return;
+    cols.forEach(col=>{
+      const v=Number(WBD.alloc[c.code+'|'+col.id])||0;
+      if(v>0)nonRegByCust.set(col.code,(nonRegByCust.get(col.code)||0)+v);
+    });
+  });
+
+  let totPool=0,totAdd=0,totUsed=0;
+  cps.forEach(c=>{
+    const addV=Number(WBD.add[c.code])||0;
+    totPool+=Math.max(0,c.balance);totAdd+=addV;
+    cols.forEach(col=>totUsed+=Number(WBD.alloc[c.code+'|'+col.id])||0);
+  });
+  const totRem=totPool+totAdd-totUsed;
+
+  let html='<div class="kpis">'+
+    '<div class="kpi"><div class="l">当前实有预算池</div><div class="v">'+wan(totPool)+'</div><div class="s">'+cps.length+' 个活动（含折扣与陈列）</div></div>'+
+    '<div class="kpi"><div class="l">临时追加预分配</div><div class="v">'+wan(totAdd)+'</div><div class="s">总池 '+wan(totPool+totAdd)+' 元</div></div>'+
+    '<div class="kpi"><div class="l">本轮已分配</div><div class="v">'+wan(totUsed)+'</div><div class="s">占总池 '+(totPool+totAdd>0?Math.round(totUsed/(totPool+totAdd)*100):0)+'%</div></div>'+
+    '<div class="kpi '+(totRem<-0.5?'red':Math.abs(totRem)<1?'':'amber')+'"><div class="l">剩余未分配</div><div class="v">'+wan(totRem)+'</div><div class="s">'+(Math.abs(totRem)<1?'已全部分完':totRem<0?'超额分配，请调减':'点击格子「上限」可一键填满')+'</div></div></div>';
+
+  html+='<div class="bar">'+
+    '<div class="seg" id="wbType"><button data-v="all" class="'+(S.wbType==='all'?'on':'')+'">全部</button><button data-v="disc" class="'+(S.wbType==='disc'?'on':'')+'">仅折扣</button><button data-v="disp" class="'+(S.wbType==='disp'?'on':'')+'">仅陈列/上市</button></div>'+
+    '<select id="wbAddCust" style="max-width:190px"><option value="">+ 移入客户列…</option>'+addableCusts.map(c=>'<option value="'+h(c.code)+'">'+h(short(c.name))+' ('+wan(c.histFee)+')</option>').join('')+'</select>'+
+    '<button class="btn" id="wbAddSub">+ 添加对账子列</button>'+
+    '<select id="wbAddZero" style="max-width:220px"><option value="">+ 调入0余额常见CP…</option>'+zeroCps.slice(0,40).map(c=>'<option value="'+h(c.code)+'">'+h(c.code+' '+c.desc)+(c.histBudget?' · 历史'+wan(c.histBudget):'')+'</option>').join('')+'</select>'+
+    '<span class="sp" style="flex:1"></span>'+
+    '<button class="btn primary" id="wbExpCsv">导出分配包 (AI填表CSV)</button>'+
+    '<button class="btn" id="wbExpJson">存草稿</button>'+
+    '<button class="btn" id="wbImpJson">读草稿</button>'+
+    '<button class="btn" id="wbReset">清空</button>'+
+    '<input type="file" id="wbJsonFile" accept=".json" style="display:none"></div>';
+
+  html+='<div class="wb-wrap"><table class="wb-tbl"><thead><tr>'+
+    '<th class="fix">活动（CP）</th><th class="n">现有余额</th><th class="n">临时追加</th><th class="n">未分配</th>';
+  cols.forEach((col,idx)=>{
+    const ms=colMonths(col.id);
+    const allM=[...HIST_MONTHS,...FUT_MONTHS];
+    html+='<th class="wb-colh"><div class="nm"><span>'+h(col.label)+(col.sub?' <span class="chip nodata">子列</span>':'')+'</span><span class="ops">'+
+      (idx>0?'<button data-mv="'+idx+'" data-d="-1" title="左移">‹</button>':'')+
+      (idx<cols.length-1?'<button data-mv="'+idx+'" data-d="1" title="右移">›</button>':'')+
+      '<button data-rm="'+h(col.id)+'" title="移出本轮">×</button></span></div>'+
+      '<div class="wb-ms">'+allM.map(mm=>{
+        const isH=mm<D.cur,on=ms.includes(mm);
+        return '<button class="'+(on?'on ':'')+(isH?'hist':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+(isH?'历史回溯(按100%实际)':'当月/未来(随保守/基准/乐观)')+'">'+(+mm.slice(4))+'月</button>';
+      }).join('')+'</div></th>';
+  });
+  html+='</tr></thead><tbody>';
+
+  const colSums=Object.fromEntries(cols.map(c=>[c.id,0]));
+  for(const cp of cps){
+    const addV=Number(WBD.add[cp.code])||0;
+    const poolTot=Math.max(0,cp.balance)+addV;
+    let rowUsed=0;
+    cols.forEach(col=>{const v=Number(WBD.alloc[cp.code+'|'+col.id])||0;rowUsed+=v;colSums[col.id]+=v});
+    const rem=poolTot-rowUsed;
+    const remCls=rem<-0.5?'over':Math.abs(rem)<1&&poolTot>0?'done':'';
+    const tag=cp.isDiscount?(cp.regional?'<span class="chip follow">区域自主</span>':cp.broad?'<span class="chip nodata">宽口径</span>':'<span class="chip ok">折扣</span>'):'<span class="chip" style="background:#f1e8ff;color:#6d28d9">陈列/上市</span>';
+    html+='<tr><td class="fix"><div><b>'+h(cp.desc)+'</b> '+tag+'</div><div class="sub">'+h(cp.code)+' · '+(BU[cp.bu]||cp.bu)+' · 止 '+cp.end.slice(5)+'</div></td>'+
+      '<td class="n">'+money(cp.balance)+'</td>'+
+      '<td class="n"><input class="wb-in add" type="number" step="100" min="0" data-add="'+h(cp.code)+'" value="'+(addV||'')+'" placeholder="0"></td>'+
+      '<td class="n wb-rem '+remCls+'">'+(Math.abs(rem)<1&&poolTot>0?'已分配':money(rem))+'</td>';
+
+    for(const col of cols){
+      const key=cp.code+'|'+col.id;
+      const val=Number(WBD.alloc[key])||0;
+      if(!cp.isDiscount){
+        html+='<td><input class="wb-in" type="number" step="100" min="0" data-alloc="'+h(key)+'" value="'+(val||'')+'" placeholder="0"><div class="wb-cap"><span>陈列不限出货</span></div></td>';
+      }else{
+        const bd=cellBreakdown(cp.code,col);
+        const over=val>bd.cap+0.5;
+        const nCh=bd.chs.filter(x=>x.checked).length;
+        const nKac=bd.kacs.filter(x=>x.checked).length;
+        const otherUsed=cp.regional?(nonRegByCust.get(col.code)||0):0;
+        html+='<td><input class="wb-in '+(over?'over':'')+'" type="number" step="100" min="0" data-alloc="'+h(key)+'" value="'+(val||'')+'" placeholder="0">'+
+          '<div class="wb-cap"><span class="fill" data-fill="'+h(key)+'" data-cap="'+Math.round(bd.cap)+'" data-rem="'+Math.round(rem+val)+'" title="点击一键填满（取上限与CP剩余的较小值）">上限 '+money(bd.cap)+'</span>'+
+          (bd.chs.length+bd.kacs.length?'<button class="chbtn" data-ch="'+h(key)+'" title="勾选渠道/KAC（已选 '+nCh+' 渠道'+(S.kacOn?' + '+nKac+' KAC':'')+'）">渠道 '+(nCh+nKac)+'/'+(bd.chs.length+bd.kacs.length)+'</button>':'')+'</div>'+
+          (otherUsed>0?'<div class="wb-warn">另分'+wan(otherUsed)+'·先批区域自主</div>':'')+'</td>';
+      }
+    }
+    html+='</tr>';
+  }
+  html+='<tr style="background:#f8fafc;font-weight:700"><td class="fix">合计</td><td class="n">'+money(totPool)+'</td><td class="n">'+money(totAdd)+'</td><td class="n wb-rem '+(totRem<-0.5?'over':Math.abs(totRem)<1?'done':'')+'">'+money(totRem)+'</td>'+
+    cols.map(c=>'<td class="n">'+money(colSums[c.id])+'</td>').join('')+'</tr>';
+  html+='</tbody></table></div>';
+  html+='<div class="note">批次指纹：'+h(D.batchKey||D.dataDate)+'（同一批三件套自动保留草稿；上传新三件套自动重新开始，客户列偏好保留）。</div>';
+  el.innerHTML=html;
+
+  el.querySelectorAll('#wbType button').forEach(b=>b.onclick=()=>{S.wbType=b.dataset.v;renderWb()});
+  el.querySelector('#wbAddCust').onchange=e=>{
+    const code=e.target.value;if(!code)return;
+    const c=ALL_CUSTS.find(x=>x.code===code);if(!c)return;
+    WBP.cols.push({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''});
+    saveWBP();renderWb();
+  };
+  el.querySelector('#wbAddSub').onclick=()=>{
+    const baseCode=prompt('输入要拆子列的客户简称（如 东方）：','东方');
+    if(!baseCode)return;
+    const base=ALL_CUSTS.find(c=>c.name.includes(baseCode)||short(c.name).includes(baseCode));
+    if(!base){toast('未找到匹配客户：'+baseCode);return}
+    const sub=prompt('输入子列对账名（如 东方-嘉荣）：',short(base.name)+'-嘉荣');
+    if(!sub||!sub.trim())return;
+    const id=base.code+'__'+Date.now().toString(36);
+    const idx=WBP.cols.findIndex(c=>c.code===base.code);
+    const item={id,code:base.code,label:sub.trim(),name:base.name,sub:sub.trim()};
+    if(idx>=0)WBP.cols.splice(idx+1,0,item);else WBP.cols.push(item);
+    saveWBP();renderWb();
+  };
+  el.querySelector('#wbAddZero').onchange=e=>{
+    const code=e.target.value;if(!code)return;
+    if(!(WBD.extraCps||[]).includes(code)){(WBD.extraCps||=[]).push(code);saveWBD();renderWb()}
+  };
+  el.querySelectorAll('button[data-mv]').forEach(b=>b.onclick=()=>{
+    const i=+b.dataset.mv,d=+b.dataset.d,j=i+d;
+    if(j<0||j>=WBP.cols.length)return;
+    const tmp=WBP.cols[i];WBP.cols[i]=WBP.cols[j];WBP.cols[j]=tmp;
+    saveWBP();renderWb();
+  });
+  el.querySelectorAll('button[data-rm]').forEach(b=>b.onclick=()=>{
+    WBP.cols=WBP.cols.filter(c=>c.id!==b.dataset.rm);saveWBP();renderWb();
+  });
+  el.querySelectorAll('.wb-ms button').forEach(b=>b.onclick=()=>{
+    const cid=b.dataset.col,mm=b.dataset.mm;
+    const curM=[...colMonths(cid)];
+    const i=curM.indexOf(mm);
+    if(i>=0){if(curM.length>1)curM.splice(i,1)}else curM.push(mm);
+    curM.sort();WBD.months[cid]=curM;saveWBD();renderWb();
+  });
+  el.querySelectorAll('input[data-add]').forEach(inp=>inp.onchange=()=>{
+    const v=Math.max(0,Number(inp.value)||0);
+    if(v>0)WBD.add[inp.dataset.add]=v;else delete WBD.add[inp.dataset.add];
+    saveWBD();renderWb();
+  });
+  el.querySelectorAll('input[data-alloc]').forEach(inp=>inp.onchange=()=>{
+    const v=Math.max(0,Number(inp.value)||0);
+    if(v>0)WBD.alloc[inp.dataset.alloc]=v;else delete WBD.alloc[inp.dataset.alloc];
+    saveWBD();renderWb();
+  });
+  el.querySelectorAll('.fill[data-fill]').forEach(sp=>sp.onclick=()=>{
+    const cap=+sp.dataset.cap||0,rem=+sp.dataset.rem||0;
+    const best=Math.max(0,Math.floor(Math.min(cap,rem)/100)*100);
+    if(best>0)WBD.alloc[sp.dataset.fill]=best;else delete WBD.alloc[sp.dataset.fill];
+    saveWBD();renderWb();
+  });
+  el.querySelectorAll('.chbtn[data-ch]').forEach(b=>b.onclick=()=>openChModal(b.dataset.ch));
+  el.querySelector('#wbExpCsv').onclick=exportWbCsv;
+  el.querySelector('#wbExpJson').onclick=()=>{
+    const blob=new Blob([JSON.stringify({batchKey:D.batchKey,prefs:WBP,draft:WBD},null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='费用分配草稿_'+D.dataDate+'.json';a.click();
+  };
+  el.querySelector('#wbImpJson').onclick=()=>el.querySelector('#wbJsonFile').click();
+  el.querySelector('#wbJsonFile').onchange=async e=>{
+    const f=e.target.files&&e.target.files[0];if(!f)return;
+    try{
+      const j=JSON.parse(await f.text());
+      if(j.prefs&&j.prefs.cols){WBP.cols=j.prefs.cols;saveWBP()}
+      if(j.draft){Object.assign(WBD,j.draft);saveWBD()}
+      toast('已恢复草稿');renderWb();
+    }catch(_){toast('草稿文件格式无效')}
+  };
+  el.querySelector('#wbReset').onclick=()=>{
+    if(!confirm('确认清空本轮已填的分配金额与临时追加？'))return;
+    WBD.alloc={};WBD.add={};WBD.extraCps=[];WBD.chSel={};saveWBD();renderWb();
+  };
+}
+
+function openChModal(key){
+  const [cpCode,colId]=key.split('|');
+  const col=WBP.cols.find(c=>c.id===colId);
+  const cp=(D.allCps||[]).find(c=>c.code===cpCode);
+  if(!col||!cp)return;
+  const bd=cellBreakdown(cpCode,col);
+  const bg=document.getElementById('wbModal'),box=document.getElementById('wbModalIn');
+  let html='<h3>'+h(col.label)+' · '+h(cp.code+' '+cp.desc)+'</h3><div class="sub">勾选月份：'+colMonths(col.id).map(mlabel).join('、')+'（低于 500 元默认不勾，可按需勾入凑整）</div>';
+  if(bd.chs.length){
+    html+='<div class="m-sec">常规渠道（合计 '+money(bd.capCh)+' 元）</div>';
+    bd.chs.forEach(x=>{html+='<div class="m-row"><label><input type="checkbox" data-pid="'+h(x.id)+'"'+(x.checked?' checked':'')+'><span>'+h(x.label)+(x.fee<500?' <span class="sub">(碎渠道)</span>':'')+'</span></label><b>'+money(x.fee)+' 元</b></div>'});
+  }
+  if(S.kacOn&&bd.kacs.length){
+    html+='<div class="m-sec">LKA/KAC 独立通道（按 '+Math.round(S.kacRate*100)+'% 折算，合计 '+money(bd.capKac)+' 元）</div>';
+    bd.kacs.forEach(x=>{html+='<div class="m-row"><label><input type="checkbox" data-pid="'+h(x.id)+'"'+(x.checked?' checked':'')+'><span>'+h(x.label)+(x.fee<500?' <span class="sub">(<500)</span>':'')+'</span></label><b>'+money(x.fee)+' 元</b></div>'});
+  }
+  html+='<div class="bar" style="justify-content:flex-end;margin:12px 0 0"><button class="btn primary" id="mClose">完成</button></div>';
+  box.innerHTML=html;bg.classList.add('on');
+  box.querySelectorAll('input[data-pid]').forEach(cb=>cb.onchange=()=>{
+    WBD.chSel[key]=WBD.chSel[key]||{};WBD.chSel[key][cb.dataset.pid]=cb.checked;saveWBD();renderWb();openChModal(key);
+  });
+  box.querySelector('#mClose').onclick=()=>bg.classList.remove('on');
+  bg.onclick=e=>{if(e.target===bg)bg.classList.remove('on')};
+}
+
+function csvCell(v){const s=String(v??'').replace(/"/g,'""');return /[",\n\r]/.test(s)?'"'+s+'"':s}
+function exportWbCsv(){
+  const headers=['客户编码','客户名称','对账子列','CP号','活动名','BU','活动类型','资金来源','渠道','归属月份','拟分金额(元)','费率','对应需出货(元)','主推SKU','主推产品名','推荐产品组','需排除PL','活动日期','适用渠道(CP)','促销品牌(MG1)','活动机制','备注草稿'];
+  const rows=[];
+  const cps=D.allCps||[];
+  for(const cp of cps){
+    const addV=Number(WBD.add[cp.code])||0;
+    const srcTag=cp.balance<D.minBalance?'预追加':addV>0?'实有+预追加':'实有预算';
+    for(const col of WBP.cols){
+      const key=cp.code+'|'+col.id;
+      const amt=Number(WBD.alloc[key])||0;
+      if(amt<=0)continue;
+      if(!cp.isDiscount){
+        rows.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,cp.type||'陈列/上市',srcTag,'',colMonths(col.id).map(mlabel).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
+        continue;
+      }
+      const bd=cellBreakdown(cp.code,col);
+      const selCh=bd.chs.filter(x=>x.checked);
+      const selKac=bd.kacs.filter(x=>x.checked);
+      const totCap=bd.cap||0;
+      const parts=[];
+      selCh.forEach(x=>{
+        Object.entries(x.perM).forEach(([mm,f])=>{
+          const share=totCap>0?f/totCap:0;
+          const a=Math.round(amt*share);
+          if(a<=0)return;
+          const p=x.pool;
+          const rt=mm<D.cur?((p.hist.find(z=>z.mm===mm)||{}).rate):(p.months[mm]&&p.months[mm].rate);
+          const top=(p.recommend&&p.recommend[0]&&p.recommend[0].top)||{};
+          const excl=[...(p.excl?p.excl.same:[]),...(p.excl?p.excl.other.map(z=>z[0]):[])];
+          const note=(col.sub?'客户组/对账：'+col.sub+'；':'')+(mm<D.cur?'历史回溯月；':'')+(excl.length?'不得与以下PL重复：'+excl.join('、'):'');
+          parts.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,x.channel,mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',top.sku||'',top.name||'',(p.recommend||[]).slice(0,3).map(g=>g.group).join('、'),excl.join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,note]);
+        });
+      });
+      if(selKac.length){
+        const allBigKac=bd.kacs.filter(x=>x.fee>=500);
+        const isGeneric=allBigKac.length>0&&selKac.length===allBigKac.length&&allBigKac.every(x=>x.checked);
+        const byM={};
+        selKac.forEach(x=>Object.entries(x.perM).forEach(([mm,f])=>byM[mm]=(byM[mm]||0)+f));
+        Object.entries(byM).forEach(([mm,f])=>{
+          const a=Math.round(amt*(totCap>0?f/totCap:0));
+          if(a<=0)return;
+          const k0=selKac[0].kac;
+          const rt=mm<D.cur?((k0.hist.find(z=>z.mm===mm)||{}).rate):(k0.months[mm]&&k0.months[mm].rate);
+          const kacNote=isGeneric?'LKA聚合('+selKac.length+'个KAC·'+Math.round(S.kacRate*100)+'%)':'客户组：'+selKac.map(x=>x.kacName).join('、')+'（'+Math.round(S.kacRate*100)+'%）';
+          parts.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣(LKA)',srcTag,'LKA Others',mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',k0.topSku||'',k0.topSkuName||'',selKac.map(x=>x.kacName).join('、'),(k0.exclSame||[]).join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,kacNote]);
+        });
+      }
+      if(!parts.length){
+        rows.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,'待定',colMonths(col.id).join('/'),amt,'','','','','','',cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,col.sub?'对账归属：'+col.sub:'']);
+      }else rows.push(...parts);
+    }
+  }
+  if(!rows.length){toast('还没有填写任何分配金额');return}
+  const csv='\uFEFF'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='费用分配包_AI填表_'+D.dataDate+'.csv';a.click();
+  toast('已导出 '+rows.length+' 条分配明细');
+}
+
 function render(){cpOpts();document.getElementById("redN").textContent=D.open.filter(o=>o.level==="risk"&&match(o,planText(o))).length||"";
-  document.getElementById("fSc").style.visibility=S.tab==="cap"?"visible":"hidden";document.getElementById("scLbl").style.visibility=S.tab==="cap"?"visible":"hidden";
-  if(S.tab==="cap")renderCap();else if(S.tab==="flt")renderFlt();else renderChk()}
-document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===t));S.tab=t.dataset.t;["cap","flt","chk"].forEach(k=>document.getElementById("v-"+k).style.display=k===S.tab?"":"none");render()});
+  const showSc=S.tab==="cap"||S.tab==="wb";
+  document.getElementById("fSc").style.visibility=showSc?"visible":"hidden";document.getElementById("scLbl").style.visibility=showSc?"visible":"hidden";
+  document.getElementById("kacBox").style.display=showSc&&(D.kacPools||[]).length?"inline-flex":"none";
+  if(S.tab==="wb")renderWb();else if(S.tab==="cap")renderCap();else if(S.tab==="flt")renderFlt();else renderChk()}
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===t));S.tab=t.dataset.t;["wb","cap","flt","chk"].forEach(k=>document.getElementById("v-"+k).style.display=k===S.tab?"":"none");render()});
+document.getElementById("kacOn").onchange=e=>{S.kacOn=e.target.checked;document.getElementById("kacBox").classList.toggle("on",S.kacOn);document.getElementById("kacCtrl").style.display=S.kacOn?"inline":"none";render()};
+document.querySelectorAll("#kacCtrl button[data-kr]").forEach(b=>b.onclick=()=>{const v=+b.dataset.kr;S.kacRate=v/100;document.getElementById("kacPct").value=v;render()});
+document.getElementById("kacPct").onchange=e=>{const v=Math.min(100,Math.max(1,Number(e.target.value)||30));e.target.value=v;S.kacRate=v/100;render()};
 document.getElementById("fCust").onchange=e=>{S.cust=e.target.value;render()};
 document.getElementById("fCP").onchange=e=>{S.cp=e.target.value;render()};
 document.getElementById("fQ").oninput=e=>{S.q=e.target.value.trim();render()};
