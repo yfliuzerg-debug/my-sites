@@ -71,7 +71,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 .wb-colh{min-width:116px}.wb-colh .nm{font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:4px}
 .wb-colh .ops button{border:0;background:none;cursor:pointer;color:var(--muted);padding:0 3px;font-size:12px}.wb-colh .ops button:hover{color:var(--red)}
 .wb-ms{display:flex;flex-wrap:wrap;gap:2px;margin-top:4px}
-.wb-ms button{border:1px solid var(--line);background:#fff;border-radius:4px;padding:0 4px;font-size:10.5px;cursor:pointer;color:var(--muted)}
+.wb-ms button{border:1px solid var(--line);background:#fff;border-radius:4px;padding:1px 4px;font-size:10.5px;line-height:1.15;cursor:pointer;color:var(--muted);display:inline-flex;flex-direction:column;align-items:center}
+.wb-ms button.nil{opacity:.42}.wb-ms button i{font-style:normal;font-size:9px;color:var(--green);font-weight:600}.wb-ms button.on i{color:inherit}
 .wb-ms button.on{background:var(--brand-soft);border-color:#9dbcf8;color:var(--brand);font-weight:600}
 .wb-ms button.hist.on{background:var(--amber-soft);border-color:#e5bd78;color:var(--amber)}
 .wb-rem.done{color:var(--green);font-weight:700}.wb-rem.over{color:var(--red);font-weight:700}
@@ -513,6 +514,52 @@ function wbRows(){
   });
 }
 
+function monthPotential(col,mm,cps){
+  const sc=S.sc,r=S.kacRate,byCp=[];
+  let tot=0;
+  for(const cp of cps){
+    if(!cp.isDiscount)continue;
+    let cf=0;
+    D.pools.filter(p=>p.cp===cp.code&&p.code===col.code).forEach(p=>{
+      let f=0;
+      if(mm<D.cur){const hx=(p.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee):0}
+      else{const cm=p.months&&p.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0):0}
+      if(f>=500)cf+=f;
+    });
+    if(S.kacOn){
+      (D.kacPools||[]).filter(k=>k.cp===cp.code&&k.code===col.code).forEach(k=>{
+        let f=0;
+        if(mm<D.cur){const hx=(k.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee)*r:0}
+        else{const cm=k.months&&k.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0)*r:0}
+        if(f>=500)cf+=f;
+      });
+    }
+    if(cf>0){tot+=cf;byCp.push({desc:cp.desc,fee:cf})}
+  }
+  byCp.sort((a,b)=>b.fee-a.fee);
+  return {tot,byCp};
+}
+function cpMonthSummary(cpCode,col){
+  const allM=[...HIST_MONTHS,...FUT_MONTHS],sc=S.sc,r=S.kacRate;
+  return allM.map(mm=>{
+    let tot=0;
+    D.pools.filter(p=>p.cp===cpCode&&p.code===col.code).forEach(p=>{
+      let f=0;
+      if(mm<D.cur){const hx=(p.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee):0}
+      else{const cm=p.months&&p.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0):0}
+      if(f>=500)tot+=f;
+    });
+    if(S.kacOn){
+      (D.kacPools||[]).filter(k=>k.cp===cpCode&&k.code===col.code).forEach(k=>{
+        let f=0;
+        if(mm<D.cur){const hx=(k.hist||[]).find(x=>x.mm===mm);f=hx&&hx.fee!=null?Math.max(0,hx.fee)*r:0}
+        else{const cm=k.months&&k.months[mm];f=cm&&cm.inCP?Math.max(0,cm.fee[sc]||0)*r:0}
+        if(f>=500)tot+=f;
+      });
+    }
+    return {mm,tot};
+  }).filter(x=>x.tot>=500);
+}
 function renderWb(){
   const el=document.getElementById("v-wb");
   const cps=wbRows();
@@ -572,7 +619,10 @@ function renderWb(){
       '<button data-rm="'+h(col.id)+'" title="移出本轮">×</button></span></div>'+
       '<div class="wb-ms">'+allM.map(mm=>{
         const isH=mm<D.cur,on=ms.includes(mm),yr=mm.slice(0,4)!==D.cur.slice(0,4)?mm.slice(2,4)+'/':'';
-        return '<button class="'+(on?'on ':'')+(isH?'hist':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+(isH?'历史回溯(按100%实际)':'当月/未来(随保守/基准/乐观)')+'">'+yr+(+mm.slice(4))+'月</button>';
+        const mp=monthPotential(col,mm,cps);
+        const tip=(isH?'历史回溯(100%实际)':'当月/未来')+' · 合计可做 '+money(mp.tot)+' 元'+(mp.byCp.length?'\\n'+mp.byCp.slice(0,5).map(x=>x.desc+' '+money(x.fee)).join(' / '):'（无可做余量）');
+        const tag=mp.tot>=1000?(mp.tot>=10000?(mp.tot/10000).toFixed(1)+'万':(mp.tot/1000).toFixed(1)+'k'):mp.tot>=500?money(mp.tot):'';
+        return '<button class="'+(on?'on ':'')+(isH?'hist ':'')+(mp.tot<500?'nil':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+h(tip)+'"><span>'+yr+(+mm.slice(4))+'月</span>'+(tag?'<i>'+tag+'</i>':'')+'</button>';
       }).join('')+'<button data-mact="all" data-col="'+h(col.id)+'" style="border-style:dashed" title="一键全选所有月份">全选</button><button data-mact="cur" data-col="'+h(col.id)+'" style="border-style:dashed" title="仅选当月">当月</button><button data-mact="none" data-col="'+h(col.id)+'" style="border-style:dashed" title="一键全不选">清空</button></div></th>';
   });
   html+='</tr></thead><tbody>';
@@ -710,7 +760,8 @@ function openChModal(key){
   if(!col||!cp)return;
   const bd=cellBreakdown(cpCode,col);
   const bg=document.getElementById('wbModal'),box=document.getElementById('wbModalIn');
-  let html='<h3>'+h(col.label)+' · '+h(cp.code+' '+cp.desc)+'</h3><div class="sub">勾选月份：'+colMonths(col.id).map(mlabel).join('、')+'（低于 500 元默认不勾，可按需勾入凑整）</div>';
+  const mSum=cpMonthSummary(cpCode,col);const maxM=mSum.reduce((m,x)=>Math.max(m,x.tot),0);
+  let html='<h3>'+h(col.label)+' · '+h(cp.code+' '+cp.desc)+'</h3><div class="sub">当前勾选：'+(colMonths(col.id).map(mlabel).join('、')||'未选')+'（低于 500 元默认不勾，可按需勾入凑整）</div>'+(mSum.length?'<div class="m-sec">本活动各月可做余量（点击可切换勾选）</div><div class="wb-ms" style="margin-bottom:6px">'+mSum.map(x=>{const on=colMonths(col.id).includes(x.mm),isH=x.mm<D.cur,hi=x.tot===maxM&&mSum.length>1;return '<button class="'+(on?'on ':'')+(isH?'hist ':'')+'" data-mjump="'+x.mm+'"><span>'+(+x.mm.slice(4))+'月</span><i style="'+(hi?'color:var(--brand)':'')+'">'+wan(x.tot)+'</i></button>'}).join('')+'</div>':'');
   if(bd.chs.length){
     html+='<div class="m-sec">常规渠道（合计 '+money(bd.capCh)+' 元）</div>';
     bd.chs.forEach(x=>{html+='<div class="m-row"><label><input type="checkbox" data-pid="'+h(x.id)+'"'+(x.checked?' checked':'')+'><span>'+h(x.label)+(x.fee<500?' <span class="sub">(碎渠道)</span>':'')+'</span></label><b>'+money(x.fee)+' 元</b></div>'});
@@ -724,6 +775,7 @@ function openChModal(key){
   box.querySelectorAll('input[data-pid]').forEach(cb=>cb.onchange=()=>{
     WBD.chSel[key]=WBD.chSel[key]||{};WBD.chSel[key][cb.dataset.pid]=cb.checked;saveWBD();renderWb();openChModal(key);
   });
+  box.querySelectorAll('button[data-mjump]').forEach(b=>b.onclick=()=>{const mm=b.dataset.mjump,curM=[...colMonths(col.id)],i=curM.indexOf(mm);if(i>=0)curM.splice(i,1);else curM.push(mm);curM.sort();WBD.months[col.id]=curM;saveWBD();renderWb();openChModal(key)});
   box.querySelector('#mClose').onclick=()=>bg.classList.remove('on');
   bg.onclick=e=>{if(e.target===bg)bg.classList.remove('on')};
 }
