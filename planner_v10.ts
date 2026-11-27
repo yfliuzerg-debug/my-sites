@@ -473,20 +473,22 @@ function buildScope(cp: CP, pool: Meta[]) {
 // ───────────────────────── 费率 ─────────────────────────
 function mechKind(cp: CP, m: Meta): { kind: string; rate: number | null } {
   const t = (cp.desc + " " + cp.mech).replace(/：/g, ":");
-  const s = (m.s1 + " " + m.s2 + " " + m.s3 + " " + m.name).toLowerCase();
-  const tests: [RegExp, string][] = [
-    [/中老年[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "senior"],
-    [/N3[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "n3"],
-    [/全家[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "family"],
+  const s = (m.s1 + " " + m.s2 + " " + m.s3 + " " + m.brand + " " + m.name).toLowerCase();
+  const tests: [RegExp, string, (x: string) => boolean][] = [
+    [/中老年[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "senior", (x) => x.includes("senior") || x.includes("中老年") || x.includes("怡养")],
+    [/N3[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "n3", (x) => x.includes("n3")],
+    [/全家[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "family", (x) => x.includes("family") || x.includes("全家")],
+    [/(?:支装)?(?:炼奶|炼乳)[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "scm", (x) => x.includes("炼奶") || x.includes("炼乳") || x.includes("scm")],
+    [/(?:淡奶油|奶油)[^%]{0,40}?(\d+(?:\.\d+)?)%/i, "cream", (x) => x.includes("淡奶油") || x.includes("奶油") || x.includes("cream")],
   ];
   const hits = tests.filter(([q]) => q.test(t));
   if (hits.length >= 2) {
-    for (const [q, k] of hits) if (s.includes(k)) return { kind: k, rate: Number(t.match(q)![1]) / 100 };
+    for (const [q, k, fn] of hits) if (fn(s)) return { kind: k, rate: Number(t.match(q)![1]) / 100 };
   }
   const all = [...new Set([...t.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].map((x) => Number(x[1]) / 100))];
   return { kind: "", rate: all.length === 1 ? all[0] : null };
 }
-const BUCKET_LABEL: Record<string, string> = { senior: "中老年", n3: "N3", family: "全家", "": "" };
+const BUCKET_LABEL: Record<string, string> = { senior: "中老年", n3: "N3", family: "全家", scm: "炼奶", cream: "淡奶油", "": "" };
 
 // ───────────────────────── 主计算 ─────────────────────────
 export type AnalyzeArgs = { biWb: any; ttsWb: any; cpWb: any; today: Date; dataDate: Date; minBalance: number };
@@ -875,7 +877,8 @@ export function analyze(a: AnalyzeArgs) {
       const rate = poolRate(p, mm);
       const actual = p.cells[mm]?.actual || 0;
       const rem = actual - occ(mm);
-      hist.push({ mm, actual, neg: p.cells[mm]?.neg || 0, occ: occ(mm), rem, rate, fee: rate != null ? Math.max(0, rem) * rate : null });
+      const wall = cp.regional ? wallFee(p, mm).w : 0;
+      hist.push({ mm, actual, neg: p.cells[mm]?.neg || 0, occ: occ(mm), rem, rate, wall, fee: rate != null ? Math.max(0, Math.max(0, rem) * rate - wall) : null });
     }
     const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
     const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
@@ -980,7 +983,7 @@ export function analyze(a: AnalyzeArgs) {
   const exclDeduct = (P: PS, mm: string) => {
     let d = 0;
     for (const Q of psByCode.get(P.pl.code) || []) {
-      if (Q === P || !P.excl.includes(Q.pl.pl) || !Q.chans.some((c) => P.chans.includes(c))) continue;
+      if (Q === P || Q.cp.code === P.cp.code || !P.excl.includes(Q.pl.pl) || !Q.chans.some((c) => P.chans.includes(c))) continue;
       const qa = Q.amt[mm] || 0;
       if (!qa) continue;
       const ov = new Set([...P.scope].filter((k) => Q.scope.has(k)));
