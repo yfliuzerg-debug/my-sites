@@ -76,6 +76,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 .wb-ms button.on{background:var(--brand-soft);border-color:#9dbcf8;color:var(--brand);font-weight:600}
 .wb-ms button.hist.on{background:var(--amber-soft);border-color:#e5bd78;color:var(--amber)}
 .wb-rem.done{color:var(--green);font-weight:700}.wb-rem.over{color:var(--red);font-weight:700}
+.wb-tbl tr.skip td{opacity:.38;background:#fafbfc}.wb-tbl tr.skip td.fix{opacity:.68}
 .wb-warn{font-size:10.5px;color:var(--amber);background:var(--amber-soft);border-radius:4px;padding:1px 4px;margin-top:2px;line-height:1.3}
 .kac-box{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:12.5px}
 .kac-box.on{border-color:#9dbcf8;background:var(--brand-soft)}
@@ -455,6 +456,7 @@ const WBD=loadJSON(WB_DRAFT_KEY,null)||{
   extraCps:[],   // 调入的0余额CP code[]
   months:{},     // colId -> string[] (勾选的月份)
   chSel:{},      // "cp|colId" -> { [poolId]: boolean } (渠道/KAC自定义勾选覆盖)
+  skipCps:[],    // 临时排除的CP code[]
 };
 function saveWBP(){saveJSON(WB_PREF_KEY,WBP)}
 function saveWBD(){saveJSON(WB_DRAFT_KEY,WBD)}
@@ -563,6 +565,8 @@ function cpMonthSummary(cpCode,col){
 function renderWb(){
   const el=document.getElementById("v-wb");
   const cps=wbRows();
+  const skipSet=new Set(WBD.skipCps||[]);
+  const activeCps=cps.filter(c=>!skipSet.has(c.code));
   const cols=WBP.cols;
   const activeCodes=new Set(cols.map(c=>c.id));
   const addableCusts=ALL_CUSTS.filter(c=>!cols.some(x=>x.id===c.code));
@@ -571,16 +575,16 @@ function renderWb(){
   // 统计每个客户本轮在非区域自主折扣 CP 上分配的总额（用于区域自主软提醒）
   const nonRegByCust=new Map();
   (D.allCps||[]).forEach(c=>{
-    if(!c.isDiscount||c.regional)return;
+    if(!c.isDiscount||c.regional||skipSet.has(c.code))return;
     cols.forEach(col=>{
       const v=Number(WBD.alloc[c.code+'|'+col.id])||0;
       if(v>0)nonRegByCust.set(col.code,(nonRegByCust.get(col.code)||0)+v);
     });
   });
 
-  // KPI 汇总
+  // KPI 汇总（仅统计勾选参与的活动）
   let totPool=0,totAdd=0,totUsed=0;
-  cps.forEach(c=>{
+  activeCps.forEach(c=>{
     const addV=Number(WBD.add[c.code])||0;
     totPool+=Math.max(0,c.balance);totAdd+=addV;
     cols.forEach(col=>totUsed+=Number(WBD.alloc[c.code+'|'+col.id])||0);
@@ -588,7 +592,7 @@ function renderWb(){
   const totRem=totPool+totAdd-totUsed;
 
   let html='<div class="kpis">'+
-    '<div class="kpi"><div class="l">当前实有预算池</div><div class="v">'+wan(totPool)+'</div><div class="s">'+cps.length+' 个活动（含折扣与陈列）</div></div>'+
+    '<div class="kpi"><div class="l">当前实有预算池</div><div class="v">'+wan(totPool)+'</div><div class="s">'+activeCps.length+(activeCps.length<cps.length?'/'+cps.length:'')+' 个参与活动</div></div>'+
     '<div class="kpi"><div class="l">临时追加预分配</div><div class="v">'+wan(totAdd)+'</div><div class="s">总池 '+wan(totPool+totAdd)+' 元</div></div>'+
     '<div class="kpi"><div class="l">本轮已分配</div><div class="v">'+wan(totUsed)+'</div><div class="s">占总池 '+(totPool+totAdd>0?Math.round(totUsed/(totPool+totAdd)*100):0)+'%</div></div>'+
     '<div class="kpi '+(totRem<-0.5?'red':Math.abs(totRem)<1?'':'amber')+'"><div class="l">剩余未分配</div><div class="v">'+wan(totRem)+'</div><div class="s">'+(Math.abs(totRem)<1?'已全部分完':totRem<0?'超额分配，请调减':'点击格子「上限」可一键填满')+'</div></div></div>';
@@ -608,7 +612,7 @@ function renderWb(){
 
   // 矩阵表
   html+='<div class="wb-wrap"><table class="wb-tbl"><thead><tr>'+
-    '<th class="fix">活动（CP）</th><th class="n">现有余额</th><th class="n">临时追加</th><th class="n">未分配</th>';
+    '<th class="fix"><label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="wbAllCp"'+(cps.length&&activeCps.length===cps.length?' checked':'')+'><span>活动（CP）'+activeCps.length+'/'+cps.length+'</span></label></th><th class="n">现有余额</th><th class="n">临时追加</th><th class="n">未分配</th>';
   cols.forEach((col,idx)=>{
     const ms=colMonths(col.id);
     const allM=[...HIST_MONTHS,...FUT_MONTHS];
@@ -619,7 +623,7 @@ function renderWb(){
       '<button data-rm="'+h(col.id)+'" title="移出本轮">×</button></span></div>'+
       '<div class="wb-ms">'+allM.map(mm=>{
         const isH=mm<D.cur,on=ms.includes(mm),yr=mm.slice(0,4)!==D.cur.slice(0,4)?mm.slice(2,4)+'/':'';
-        const mp=monthPotential(col,mm,cps);
+        const mp=monthPotential(col,mm,activeCps);
         const tip=(isH?'历史回溯(100%实际)':'当月/未来')+' · 合计可做 '+money(mp.tot)+' 元'+(mp.byCp.length?'\\n'+mp.byCp.slice(0,5).map(x=>x.desc+' '+money(x.fee)).join(' / '):'（无可做余量）');
         const tag=mp.tot>=1000?(mp.tot>=10000?(mp.tot/10000).toFixed(1)+'万':(mp.tot/1000).toFixed(1)+'k'):mp.tot>=500?money(mp.tot):'';
         return '<button class="'+(on?'on ':'')+(isH?'hist ':'')+(mp.tot<500?'nil':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+h(tip)+'"><span>'+yr+(+mm.slice(4))+'月</span>'+(tag?'<i>'+tag+'</i>':'')+'</button>';
@@ -629,14 +633,15 @@ function renderWb(){
 
   const colSums=Object.fromEntries(cols.map(c=>[c.id,0]));
   for(const cp of cps){
+    const skipped=skipSet.has(cp.code);
     const addV=Number(WBD.add[cp.code])||0;
     const poolTot=Math.max(0,cp.balance)+addV;
     let rowUsed=0;
-    cols.forEach(col=>{const v=Number(WBD.alloc[cp.code+'|'+col.id])||0;rowUsed+=v;colSums[col.id]+=v});
+    cols.forEach(col=>{const v=Number(WBD.alloc[cp.code+'|'+col.id])||0;rowUsed+=v;if(!skipped)colSums[col.id]+=v});
     const rem=poolTot-rowUsed;
     const remCls=rem<-0.5?'over':Math.abs(rem)<1&&poolTot>0?'done':'';
     const tag=cp.isDiscount?(cp.regional?'<span class="chip follow">区域自主</span>':cp.broad?'<span class="chip nodata">宽口径</span>':'<span class="chip ok">折扣</span>'):'<span class="chip" style="background:#f1e8ff;color:#6d28d9">陈列/上市</span>';
-    html+='<tr><td class="fix"><div><b>'+h(cp.desc)+'</b> '+tag+'</div><div class="sub">'+h(cp.code)+' · '+(BU[cp.bu]||cp.bu)+' · '+(cp.start?cp.start.slice(5):'')+'~'+(cp.end?cp.end.slice(5):'')+'</div></td>'+
+    html+='<tr class="'+(skipped?'skip':'')+'"><td class="fix"><div style="display:flex;align-items:flex-start;gap:6px"><input type="checkbox" data-cpchk="'+h(cp.code)+'"'+(skipped?'':' checked')+' style="margin-top:3px;cursor:pointer" title="取消勾选可临时排除此活动"><div><div><b>'+h(cp.desc)+'</b> '+tag+'</div><div class="sub">'+h(cp.code)+' · '+(BU[cp.bu]||cp.bu)+' · '+(cp.start?cp.start.slice(5):'')+'~'+(cp.end?cp.end.slice(5):'')+'</div></div></div></td>'+
       '<td class="n">'+money(cp.balance)+'</td>'+
       '<td class="n"><input class="wb-in add" type="number" step="100" min="0" data-add="'+h(cp.code)+'" value="'+(addV||'')+'" placeholder="0"></td>'+
       '<td class="n wb-rem '+remCls+'">'+(Math.abs(rem)<1&&poolTot>0?'已分配':money(rem))+'</td>';
@@ -669,6 +674,18 @@ function renderWb(){
 
   // 事件绑定
   el.querySelectorAll('#wbType button').forEach(b=>b.onclick=()=>{S.wbType=b.dataset.v;renderWb()});
+  const allCb=el.querySelector('#wbAllCp');
+  if(allCb)allCb.onchange=()=>{
+    const curCodes=cps.map(c=>c.code);
+    const s=new Set(WBD.skipCps||[]);
+    if(allCb.checked)curCodes.forEach(c=>s.delete(c));else curCodes.forEach(c=>s.add(c));
+    WBD.skipCps=[...s];saveWBD();renderWb();
+  };
+  el.querySelectorAll('input[data-cpchk]').forEach(cb=>cb.onchange=()=>{
+    const s=new Set(WBD.skipCps||[]);
+    if(cb.checked)s.delete(cb.dataset.cpchk);else s.add(cb.dataset.cpchk);
+    WBD.skipCps=[...s];saveWBD();renderWb();
+  });
   el.querySelector('#wbAddCust').onchange=e=>{
     const code=e.target.value;if(!code)return;
     const c=ALL_CUSTS.find(x=>x.code===code);if(!c)return;
@@ -749,7 +766,7 @@ function renderWb(){
   };
   el.querySelector('#wbReset').onclick=()=>{
     if(!confirm('确认清空本轮已填的分配金额与临时追加？'))return;
-    WBD.alloc={};WBD.add={};WBD.extraCps=[];WBD.chSel={};saveWBD();renderWb();
+    WBD.alloc={};WBD.add={};WBD.extraCps=[];WBD.chSel={};WBD.skipCps=[];saveWBD();renderWb();
   };
 }
 
@@ -784,7 +801,8 @@ function csvCell(v){const s=String(v??'').replace(/"/g,'""');return /[",\\n\\r]/
 function exportWbCsv(){
   const headers=['客户编码','客户名称','客户简称','对账子列','CP号','活动名','BU','活动类型','资金来源','渠道','归属月份','拟分金额(元)','费率','对应需出货(元)','主推SKU','主推产品名','推荐产品组','需排除PL','活动日期','适用渠道(CP)','促销品牌(MG1)','活动机制','备注草稿'];
   const rows=[];
-  const cps=D.allCps||[];
+  const skipSet=new Set(WBD.skipCps||[]);
+  const cps=(D.allCps||[]).filter(c=>!skipSet.has(c.code));
   for(const cp of cps){
     const addV=Number(WBD.add[cp.code])||0;
     const srcTag=cp.balance<D.minBalance?'预追加':addV>0?'实有+预追加':'实有预算';
