@@ -438,7 +438,7 @@ const HIST_MONTHS=(()=>{
   return [...s].sort();
 })();
 const FUT_MONTHS=[D.cur,D.m1,D.m2];
-const DEFAULT_MONTHS=FUT_MONTHS.filter(m=>m<=D.qEnd);
+const DEFAULT_MONTHS=[D.cur];
 
 function loadJSON(k,def){try{const v=localStorage.getItem(k);return v?JSON.parse(v):def}catch(_){return def}}
 function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(_){}}
