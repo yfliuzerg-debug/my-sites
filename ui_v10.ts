@@ -1,4 +1,4 @@
-// 费用规划助手 v10 页面：上传页 + 结果页（费用分配台 / 能做多少费用 / 在途计划·督促出货 / 数据说明）
+// 费用规划助手 v10 页面：上传页 + 结果页（能做多少费用 / 在途计划·督促出货 / 数据说明）
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const CSS = `
@@ -54,6 +54,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 .upl input[type=date],.upl input[type=number]{padding:7px 9px;border:1px solid var(--line);border-radius:8px}
 .loading{display:none;position:fixed;inset:0;background:rgba(255,255,255,.85);z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:8px;font-weight:600}
 .loading.on{display:flex}.spin{width:34px;height:34px;border:3px solid var(--brand-soft);border-top-color:var(--brand);border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+
 .wb-wrap{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:12px;margin-bottom:12px}
 .wb-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
 .wb-tbl th,.wb-tbl td{padding:6px 8px;border:1px solid #ebeff5;vertical-align:top}
@@ -89,7 +90,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--brand);font-weight:60
 
 export function uploadPage(defaultDate: string, message = "") {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>费用规划助手</title><style>${CSS}</style></head><body>
-<div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta">费用分配台 · 还能做多少费用 · 催出货 · 核不掉的钱转给谁</span><span class="sp"></span><a class="btn" href="/legacy">旧版</a><a class="btn" href="/logout">退出</a></div></div>
+<div class="top"><div class="in"><h1>费用规划助手 v10</h1><span class="meta">还能做多少费用 · 催出货 · 核不掉的钱转给谁</span><span class="sp"></span><a class="btn" href="/legacy">旧版</a><a class="btn" href="/logout">退出</a></div></div>
 <form class="upl" action="/v10/analyze" method="post" enctype="multipart/form-data" onsubmit="document.getElementById('ld').classList.add('on')">
 <h2>上传三份文件</h2><div class="sub">BI 出货库存表、TTS 计划大表、CP 预算表。文件只用来算这一次，不会保存。</div>
 ${message ? `<div class="chip risk" style="margin-top:10px">${esc(message)}</div>` : ""}
@@ -336,6 +337,7 @@ function fltDetail(o){
    '<tr><td>这些货已经出了（扣了退货）</td><td class="n">'+money(o.gross)+'</td></tr>'+
    (o.packN>1?'<tr><td>同活动的几条计划</td><td>共 '+o.packN+' 条（'+o.packRates.map(pct).join('、')+'），货可以互相挪，先给点数高的。这条排第 '+o.packRank+'</td></tr>':'')+
    (o.peerDone?'<tr><td>减：点数更高的计划或已核销的计划先用掉的货</td><td class="n neg">− '+money(o.peerDone)+'</td></tr>':'')+
+   
    '<tr><td>算给这条计划的货</td><td class="n"><b>'+money(o.avail)+'</b></td></tr>'+
    (!o.closed?'<tr><td>到期前预计还能出</td><td class="n">'+money(o.fcst)+'<div class="sub">'+(o.projBasis==="pace"?'按本月每天 '+money(o.paceDaily)+' 的速度算':'按以前月份平均算')+'</div></td></tr>':'')+
    (o.perMonth&&o.perMonth.length>1?'<tr><td>每个月（计划要 / 已出）</td><td class="n">'+o.perMonth.map(x=>mlabel(x.mm)+' '+money(x.need)+' / '+money(x.avail)).join('<br>')+'</td></tr>':'')+
@@ -441,19 +443,21 @@ function loadJSON(k,def){try{const v=localStorage.getItem(k);return v?JSON.parse
 function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(_){}}
 
 const WBP=loadJSON(WB_PREF_KEY,null)||{cols:ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}))};
+// 确保至少有列
 if(!WBP.cols||!WBP.cols.length)WBP.cols=ALL_CUSTS.slice(0,8).map(c=>({id:c.code,code:c.code,label:short(c.name),name:c.name,sub:''}));
 
 const WBD=loadJSON(WB_DRAFT_KEY,null)||{
-  alloc:{},
-  add:{},
-  extraCps:[],
-  months:{},
-  chSel:{},
+  alloc:{},      // "cp|colId" -> number
+  add:{},        // cp -> number (临时追加)
+  extraCps:[],   // 调入的0余额CP code[]
+  months:{},     // colId -> string[] (勾选的月份)
+  chSel:{},      // "cp|colId" -> { [poolId]: boolean } (渠道/KAC自定义勾选覆盖)
 };
 function saveWBP(){saveJSON(WB_PREF_KEY,WBP)}
 function saveWBD(){saveJSON(WB_DRAFT_KEY,WBD)}
 function colMonths(colId){return WBD.months[colId]&&WBD.months[colId].length?WBD.months[colId]:DEFAULT_MONTHS}
 
+// 计算某 (cp, col) 下所有可用渠道 & KAC 通道的金额明细
 function cellBreakdown(cpCode,col){
   const ms=colMonths(col.id);
   const sc=S.sc;
@@ -511,9 +515,11 @@ function renderWb(){
   const el=document.getElementById("v-wb");
   const cps=wbRows();
   const cols=WBP.cols;
+  const activeCodes=new Set(cols.map(c=>c.id));
   const addableCusts=ALL_CUSTS.filter(c=>!cols.some(x=>x.id===c.code));
   const zeroCps=(D.allCps||[]).filter(c=>c.balance<D.minBalance&&!(WBD.extraCps||[]).includes(c.code)&&(!S.bu||c.bu===S.bu));
 
+  // 统计每个客户本轮在非区域自主折扣 CP 上分配的总额（用于区域自主软提醒）
   const nonRegByCust=new Map();
   (D.allCps||[]).forEach(c=>{
     if(!c.isDiscount||c.regional)return;
@@ -523,6 +529,7 @@ function renderWb(){
     });
   });
 
+  // KPI 汇总
   let totPool=0,totAdd=0,totUsed=0;
   cps.forEach(c=>{
     const addV=Number(WBD.add[c.code])||0;
@@ -537,6 +544,7 @@ function renderWb(){
     '<div class="kpi"><div class="l">本轮已分配</div><div class="v">'+wan(totUsed)+'</div><div class="s">占总池 '+(totPool+totAdd>0?Math.round(totUsed/(totPool+totAdd)*100):0)+'%</div></div>'+
     '<div class="kpi '+(totRem<-0.5?'red':Math.abs(totRem)<1?'':'amber')+'"><div class="l">剩余未分配</div><div class="v">'+wan(totRem)+'</div><div class="s">'+(Math.abs(totRem)<1?'已全部分完':totRem<0?'超额分配，请调减':'点击格子「上限」可一键填满')+'</div></div></div>';
 
+  // 工具条
   html+='<div class="bar">'+
     '<div class="seg" id="wbType"><button data-v="all" class="'+(S.wbType==='all'?'on':'')+'">全部</button><button data-v="disc" class="'+(S.wbType==='disc'?'on':'')+'">仅折扣</button><button data-v="disp" class="'+(S.wbType==='disp'?'on':'')+'">仅陈列/上市</button></div>'+
     '<select id="wbAddCust" style="max-width:190px"><option value="">+ 移入客户列…</option>'+addableCusts.map(c=>'<option value="'+h(c.code)+'">'+h(short(c.name))+' ('+wan(c.histFee)+')</option>').join('')+'</select>'+
@@ -549,6 +557,7 @@ function renderWb(){
     '<button class="btn" id="wbReset">清空</button>'+
     '<input type="file" id="wbJsonFile" accept=".json" style="display:none"></div>';
 
+  // 矩阵表
   html+='<div class="wb-wrap"><table class="wb-tbl"><thead><tr>'+
     '<th class="fix">活动（CP）</th><th class="n">现有余额</th><th class="n">临时追加</th><th class="n">未分配</th>';
   cols.forEach((col,idx)=>{
@@ -598,12 +607,14 @@ function renderWb(){
     }
     html+='</tr>';
   }
+  // 合计行
   html+='<tr style="background:#f8fafc;font-weight:700"><td class="fix">合计</td><td class="n">'+money(totPool)+'</td><td class="n">'+money(totAdd)+'</td><td class="n wb-rem '+(totRem<-0.5?'over':Math.abs(totRem)<1?'done':'')+'">'+money(totRem)+'</td>'+
     cols.map(c=>'<td class="n">'+money(colSums[c.id])+'</td>').join('')+'</tr>';
   html+='</tbody></table></div>';
   html+='<div class="note">批次指纹：'+h(D.batchKey||D.dataDate)+'（同一批三件套自动保留草稿；上传新三件套自动重新开始，客户列偏好保留）。</div>';
   el.innerHTML=html;
 
+  // 事件绑定
   el.querySelectorAll('#wbType button').forEach(b=>b.onclick=()=>{S.wbType=b.dataset.v;renderWb()});
   el.querySelector('#wbAddCust').onchange=e=>{
     const code=e.target.value;if(!code)return;
@@ -707,7 +718,7 @@ function openChModal(key){
   bg.onclick=e=>{if(e.target===bg)bg.classList.remove('on')};
 }
 
-function csvCell(v){const s=String(v??'').replace(/"/g,'""');return /[",\n\r]/.test(s)?'"'+s+'"':s}
+function csvCell(v){const s=String(v??'').replace(/"/g,'""');return /[",\\n\\r]/.test(s)?'"'+s+'"':s}
 function exportWbCsv(){
   const headers=['客户编码','客户名称','对账子列','CP号','活动名','BU','活动类型','资金来源','渠道','归属月份','拟分金额(元)','费率','对应需出货(元)','主推SKU','主推产品名','推荐产品组','需排除PL','活动日期','适用渠道(CP)','促销品牌(MG1)','活动机制','备注草稿'];
   const rows=[];
@@ -728,6 +739,7 @@ function exportWbCsv(){
       const selKac=bd.kacs.filter(x=>x.checked);
       const totCap=bd.cap||0;
       const parts=[];
+      // 常规渠道按月拆行
       selCh.forEach(x=>{
         Object.entries(x.perM).forEach(([mm,f])=>{
           const share=totCap>0?f/totCap:0;
@@ -741,6 +753,7 @@ function exportWbCsv(){
           parts.push([col.code,col.name,col.sub||'',cp.code,cp.desc,BU[cp.bu]||cp.bu,'价格折扣',srcTag,x.channel,mm,a,rt!=null?pct(rt):'',rt?Math.round(a/rt):'',top.sku||'',top.name||'',(p.recommend||[]).slice(0,3).map(g=>g.group).join('、'),excl.join('、'),cp.start+'~'+cp.end,cp.sub,cp.mg1,cp.mech,note]);
         });
       });
+      // LKA/KAC 通道：若全选了所有 >=500 的 KAC，合并为简洁 LKA Others；否则写具体客户组
       if(selKac.length){
         const allBigKac=bd.kacs.filter(x=>x.fee>=500);
         const isGeneric=allBigKac.length>0&&selKac.length===allBigKac.length&&allBigKac.every(x=>x.checked);
@@ -761,7 +774,7 @@ function exportWbCsv(){
     }
   }
   if(!rows.length){toast('还没有填写任何分配金额');return}
-  const csv='\uFEFF'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const csv='\\uFEFF'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\\r\\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='费用分配包_AI填表_'+D.dataDate+'.csv';a.click();
   toast('已导出 '+rows.length+' 条分配明细');
@@ -799,7 +812,7 @@ document.getElementById("exp").onclick=async()=>{
   const rules=[...box.querySelectorAll("li")].map((li,k)=>({"序号":k+1,"规则":li.textContent})).concat(D.checks.filter(c=>c.level==="info").map(c=>({"序号":"","规则":c.text})));
   const res=await fetch("/v10/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cap,flt,ret,hist,note,prod,rules,cur:D.cur})});
   if(!res.ok){toast("导出失败："+res.status);return}
-  const b=await res.blob();const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="费用规划_"+D.dataDate+".xlsx";a.click();
+  const b=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download="费用规划_"+D.dataDate+".xlsx";a.click();
 };
 render();
 </script></body></html>`;
