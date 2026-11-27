@@ -127,9 +127,10 @@ type Meta = {
 };
 type SORow = { channel: string; code: string; name: string; sku: string; months: Record<string, number> };
 type CP = {
-  code: string; start: Date; end: Date; desc: string; mech: string; bu: string; mg1: string[]; sub: string;
+  code: string; start: Date; end: Date; desc: string; mech: string; bu: string; mg1: string[]; mg1Raw: string; sub: string;
   balance: number; type: string; isDiscount: boolean; broad: boolean; regional: boolean; mg1Blank: number; fullBU: boolean;
 };
+type KACSORow = { kacCode: string; kacName: string; code: string; name: string; sku: string; months: Record<string, number> };
 type Plan = {
   pl: string; code: string; name: string; channel: string; cp: string; mg1: string; skus: string[]; skuNames: string[];
   start: Date; end: Date; promoStart: Date | null; promoEnd: Date | null; remarkDates: boolean;
@@ -261,8 +262,38 @@ function parseBI(wb: any) {
       if (targets.some((t) => m.aliases.has(norm(t)))) m.aliases.add(norm(alias));
     }
   }
+  // BI-SO(折扣)-KAC：按客户组(KAC)出货净额（千元 → 元），供 LKA/KAC 独立通道开关使用
+  const soKac: KACSORow[] = [];
+  if (wb.SheetNames.includes("BI-SO(折扣)-KAC")) {
+    const rs = sheetRows(wb, "BI-SO(折扣)-KAC");
+    const hi = findHeader(rs, ["Kac Code", "Customer Code", "SKU"]);
+    if (hi >= 0) {
+      const h = rs[hi];
+      const x = hmap(h);
+      const mc: [string, number][] = [];
+      h.forEach((v, i) => { const k = monthKey(v); if (k) mc.push([k, i]); });
+      for (const r of rs.slice(hi + 1)) {
+        const kacCode = str(r, x["Kac Code"]);
+        const kacName = str(r, x["Kac Name CN"]);
+        const sku = str(r, x["SKU"]);
+        const code = str(r, x["Customer Code"]);
+        const name = str(r, x["Customer Name"]);
+        if (!sku || !name || !kacCode || kacCode.toUpperCase() === "ISNULL" || !kacName || kacName === "0" || /汇总|总计/.test(code + name)) continue;
+        fill(get(sku), {
+          bu: buKey(cell(r, x["BU"])), brandCode: str(r, x["Brand"]), brand: str(r, x["Brand Name"]),
+          s1: str(r, x["PH5 Segment1_MKT"]), s2: str(r, x["PH5 Segment2_Detail"]), name: str(r, x["SKU Name CN"]),
+        });
+        const mv: Record<string, number> = {};
+        for (const [k, i] of mc) {
+          const v = num(r[i]) * 1000;
+          if (v) mv[k] = v;
+        }
+        soKac.push({ kacCode, kacName, code, name, sku, months: mv });
+      }
+    }
+  }
   months.sort();
-  return { meta, so, stock, stockMonth, rates, months };
+  return { meta, so, soKac, stock, stockMonth, rates, months };
 }
 
 const CPA = {
@@ -302,8 +333,8 @@ function parseCP(wb: any): CP[] {
     const broad = /自定义/.test(type);
     const isT018 = /T018/i.test(budgetCode);
     const isT021 = /T021/i.test(budgetCode);
+    const mg1Raw = str(r, ix.mg1);
     const mg1 = list(cell(r, ix.mg1)).map(norm);
-    // 只有代码没有全称的品牌（如 OSW、OS6、OSA、OSU）导出时会丢，原位置留下空位
     const mg1Blank = String(cell(r, ix.mg1) ?? "").split(",").filter((x, i, arr) => !x.trim() && arr.length > 1).length;
     const textAll = `${desc} ${mech}`;
     if (mg1Blank > 0) {
@@ -321,12 +352,10 @@ function parseCP(wb: any): CP[] {
       }
     }
     out.push({
-      code, start, end, desc, mech, bu, mg1, mg1Blank,
-      // TT / WS / Sub-D / 区域自主 / 订货会（T018/T021 宽口径）是本 BU 全品类，不按促销品牌过滤（避免导出丢品牌）
+      code, start, end, desc, mech, bu, mg1, mg1Raw, mg1Blank,
       fullBU: /^(DA|CF|CO)\d+\w*?(TT|WS)$/i.test(code) || /sub[-_ ]?d/i.test(desc) || (broad && (isT018 || isT021)),
       sub: str(r, ix.sub), balance: num(cell(r, ix.bal)), type,
       isDiscount: (type ? /价格折扣|Price Promotion|折扣/i.test(type) : !/^\s*display/i.test(mech)) || (broad && (isT018 || isT021)),
-      // 自定义类 CP（MT TT、区域自主、T018 订货会）是宽口径预算池：可做折扣/陈列/上市，网站只算折扣部分；仅"区域自主"有排他 CP 墙
       broad, regional: /区域自主/.test(desc),
     });
   }
@@ -636,7 +665,6 @@ export function analyze(a: AnalyzeArgs) {
   for (const pl of plans) {
     if (pl.cancelled || pl.orderAmount <= 0 || pl.rate <= 0) continue;
     if (pl.bu && !CONFIG.targetBU.has(pl.bu)) continue;
-    // 已拍死计划按实际占用CG预算折算占货：零核销结案不占货，部分核销结案按 占用CG预算金额/预算合计 折算
     const effOrderAmount = (pl.done && pl.hasCgOcc && pl.budget > 0)
       ? (pl.cgOcc <= 0.01 ? 0 : pl.orderAmount * Math.min(1, Math.max(0, pl.cgOcc / pl.budget)))
       : pl.orderAmount;
@@ -1103,10 +1131,144 @@ export function analyze(a: AnalyzeArgs) {
   checks.push({ level: "info", text: "核销池口径：客户编码 × CP × BI 渠道；池内含 CP 机制允许的全部品牌/Segment 产品，正负出货一起算净额。同 CP 已有计划按计划进货金额扣占用（按活动天数分摊到月份）。不同 CP 之间不互相扣。" });
   checks.push({ level: "info", text: "下月/下下月预测 = 近 3 个完整月净出货均值 × 季节系数（去年同月 ÷ 去年同期 3 个月均值，限制在 0.7–1.3）；下月再乘库存系数（库存周数 ÷ 4，限制在 0.7–1.3，客户无库存数据时按 1.00）。三档系数只乘在尚未发生的部分。" });
 
+  // ───────────────────────── KAC/LKA 独立通道池（前端开关默认关闭，不影响原通道） ─────────────────────────
+  const kacPoolsOut: any[] = [];
+  if (bi.soKac.length) {
+    const kPools = new Map<string, Pool & { kacCode: string; kacName: string }>();
+    const getKPool = (code: string, name: string, cp: string, kacCode: string, kacName: string, bucket: string) => {
+      const id = `KAC|${code}|${cp}|${kacName}|${bucket}`;
+      let p = kPools.get(id);
+      if (!p) kPools.set(id, (p = { id, code, name, cp, channel: `KAC:${kacName}`, kacCode, kacName, bucket, skus: new Map(), cells: {}, stock: 0, stockKnown: false, rate: {}, plans: [], occFee: {}, occPlans: {} }));
+      return p;
+    };
+    for (const cp of cps) {
+      if (!cp.isDiscount || ym(cp.end) < cur || !/lka/i.test(cp.sub)) continue;
+      const info = cpInfo.get(cp.code);
+      if (!info) continue;
+      for (const r of bi.soKac) {
+        if (!info.skus.has(r.sku) || !clientOK(cp, r.name)) continue;
+        const m = bi.meta.get(r.sku)!;
+        const bucket = mechKind(cp, m).kind;
+        const p = getKPool(capCode(r.code), r.name, cp.code, r.kacCode, r.kacName, bucket);
+        const vals: Record<string, number> = {};
+        for (const mm of monthsAll) {
+          const v = info.timedOut(m, "sm", mm) ? 0 : (r.months[mm] || 0);
+          if (!v) continue;
+          vals[mm] = v;
+          const c = cellOf(p, mm);
+          c.actual += v;
+          if (v < 0) c.neg += v;
+          const rt = rateFor(cp, m, r.name, mm, "sm");
+          if (rt != null) { const w = Math.max(Math.abs(v), 1); c.fee += rt * w; c.feeW += w; }
+        }
+        const prev = p.skus.get(r.sku) || {};
+        for (const [mm, v] of Object.entries(vals)) prev[mm] = (prev[mm] || 0) + v;
+        p.skus.set(r.sku, prev);
+      }
+    }
+    // 仅扣减 LKA 渠道（或备注指明对应客户组）的计划，不与 SM/MM 互斥
+    for (const row of planRows) {
+      const pl: Plan = row.pl;
+      if (!/lka/i.test(pl.channel)) continue;
+      const cp = cpBy.get(pl.cp);
+      if (!cp || !cp.isDiscount || ym(cp.end) < cur) continue;
+      const m0 = bi.meta.get(pl.skus[0] || "") || emptyMeta(pl.skus[0] || "");
+      const bucket = mechKind(cp, m0).kind;
+      const cc = capCode(pl.code);
+      const grpMatch = (pl.remarks.match(/客户组[：:]\s*([^；;，,\n]+)/) || [])[1]?.trim() || "";
+      const cands = [...kPools.values()].filter((p) => p.code === cc && p.cp === pl.cp && p.bucket === bucket && (!grpMatch || p.kacName.includes(grpMatch) || grpMatch.includes(p.kacName)));
+      if (!cands.length) continue;
+      for (const sp of row.split) {
+        const mm = sp.mm, amt = sp.amount;
+        const weights = cands.map((p) => Math.max(0, p.cells[mm]?.actual || 0));
+        const wsum = weights.reduce((x, y) => x + y, 0);
+        cands.forEach((p, i) => {
+          const share = wsum > 0 ? weights[i] / wsum : (1 / cands.length);
+          const c = cellOf(p, mm);
+          if (pl.done) c.occDone += amt * share; else c.occOpen += amt * share;
+          p.occFee[mm] = (p.occFee[mm] || 0) + amt * share * pl.rate;
+          (p.occPlans[mm] ||= new Set()).add(pl.pl);
+        });
+      }
+    }
+    const futureMonths = [cur, m1, m2];
+    const win = [addMonth(cur, -3), addMonth(cur, -2), addMonth(cur, -1), cur];
+    for (const p of kPools.values()) {
+      const cp = cpBy.get(p.cp)!;
+      const info = cpInfo.get(p.cp)!;
+      const f = forecastOf(p);
+      const inCP = (mm: string) => mm >= ym(cp.start) && mm <= ym(cp.end);
+      const occ = (mm: string) => (p.cells[mm]?.occDone || 0) + (p.cells[mm]?.occOpen || 0);
+      const months: Record<string, any> = {};
+      for (const mm of futureMonths) {
+        const rate = poolRate(p, mm);
+        const so = scen.map((s) => (mm === cur ? f.mtd + f.remain * s.k : (mm === m1 ? f.m1 : f.m2) * s.k));
+        const rem = so.map((v) => v - occ(mm));
+        months[mm] = {
+          inCP: inCP(mm), rate, actual: p.cells[mm]?.actual || 0, occ: occ(mm), occFee: p.occFee[mm] || 0, occN: p.occPlans[mm]?.size || 0,
+          so, rem, fee: rem.map((v) => (inCP(mm) && rate != null ? Math.max(0, Math.max(0, v) * rate) : 0)),
+        };
+      }
+      const hist: any[] = [];
+      for (const mm of monthsAll.filter((x) => x < cur && x >= ym(cp.start) && x <= ym(cp.end))) {
+        const rate = poolRate(p, mm);
+        const actual = p.cells[mm]?.actual || 0;
+        const rem = actual - occ(mm);
+        hist.push({ mm, actual, neg: p.cells[mm]?.neg || 0, occ: occ(mm), rem, rate, fee: rate != null ? Math.max(0, rem) * rate : null });
+      }
+      const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
+      const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
+      if (quarter[2] + nextQ[2] < 50 && !hist.some((x) => (x.fee || 0) >= 50)) continue;
+      let topSku = "", topSkuName = "", topSo = -Infinity;
+      for (const [sku, mv] of p.skus) {
+        const s4 = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
+        if (s4 > topSo) { topSo = s4; topSku = sku; topSkuName = bi.meta.get(sku)?.name || sku; }
+      }
+      const exclSame = new Set<string>();
+      for (const mm of futureMonths) if (months[mm].inCP) for (const pl of p.occPlans[mm] || []) exclSame.add(pl);
+      kacPoolsOut.push({
+        id: p.id, code: p.code, name: p.name, cp: p.cp, cpDesc: cp.desc, cpBalance: cp.balance, cpEnd: ym(cp.end), bu: cp.bu,
+        kacCode: p.kacCode, kacName: p.kacName, bucket: BUCKET_LABEL[p.bucket] ?? p.bucket, scope: info.scopeLabel,
+        broad: cp.broad, regional: cp.regional, months, hist, quarter, nextQ,
+        topSku, topSkuName, exclSame: [...exclSame].sort(), plannable: cp.balance >= a.minBalance,
+      });
+    }
+  }
+
+  // ───────────────────────── 费用分配台元数据：全量在期 CP（含陈列/上市与 0 余额常见 CP）+ 客户历史排名 + 批次指纹 ─────────────────────────
+  const cpHistBudget = new Map<string, number>();
+  const custHistFee = new Map<string, { code: string; name: string; fee: number }>();
+  for (const pl of plans) {
+    if (pl.cancelled || (pl.bu && !CONFIG.targetBU.has(pl.bu))) continue;
+    const amt = pl.hasCgOcc ? pl.cgOcc : pl.budget;
+    if (amt <= 0) continue;
+    cpHistBudget.set(pl.cp, (cpHistBudget.get(pl.cp) || 0) + amt);
+    const cc = capCode(pl.code);
+    const prev = custHistFee.get(cc) || { code: cc, name: pl.name, fee: 0 };
+    prev.fee += amt;
+    custHistFee.set(cc, prev);
+  }
+  const allCps = cps
+    .filter((c) => CONFIG.targetBU.has(c.bu) && ym(c.end) >= cur)
+    .map((c) => ({
+      code: c.code, desc: c.desc, bu: c.bu, type: c.type, isDiscount: c.isDiscount, broad: c.broad, regional: c.regional,
+      balance: c.balance, start: fmtD(c.start), end: fmtD(c.end), sub: c.sub, mg1: c.mg1Raw, mech: c.mech,
+      histBudget: cpHistBudget.get(c.code) || 0,
+    }))
+    .sort((x, y) => {
+      const xa = x.balance >= a.minBalance ? 1 : 0, ya = y.balance >= a.minBalance ? 1 : 0;
+      if (xa !== ya) return ya - xa;
+      if (xa) return (y.isDiscount === x.isDiscount ? 0 : y.isDiscount ? 1 : -1) || y.balance - x.balance;
+      return y.histBudget - x.histBudget || y.balance - x.balance;
+    });
+  const custRank = [...custHistFee.values()].sort((x, y) => y.fee - x.fee);
+  const balSig = Math.round(allCps.reduce((s, c) => s + Math.max(0, c.balance), 0));
+  const batchKey = `${fmtD(a.dataDate)}_${balSig}_${bi.so.length}_${plans.length}`;
+
   return {
     version: "v10", generatedAt: new Date().toISOString(), cur, m1, m2, qEnd, dataDate: fmtD(a.dataDate), doneDays, remainDays,
     scenarios: scen.map((s) => ({ key: s.key, label: s.label, k: s.k })), minBalance: a.minBalance,
-    pools: poolOut, open, checks, prod: prodMeta,
+    pools: poolOut, kacPools: kacPoolsOut, allCps, custRank, batchKey, open, checks, prod: prodMeta,
     files: { soRows: bi.so.length, plans: plans.length, cps: cps.length, months: bi.months },
   };
 }
