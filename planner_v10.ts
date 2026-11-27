@@ -231,7 +231,7 @@ function parseBI(wb: any) {
       }
     }
   }
-  // SKURate：单品费率上限 + MG1 名称与编码别名
+  // SKURate：单品费率上限 + MG1 名称别名
   const rates: RateRow[] = [];
   if (wb.SheetNames.includes("SKURate")) {
     const rs = sheetRows(wb, "SKURate");
@@ -1219,6 +1219,7 @@ export function analyze(a: AnalyzeArgs) {
       const quarter = scen.map((_, i) => futureMonths.filter((mm) => mm <= qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
       const nextQ = scen.map((_, i) => futureMonths.filter((mm) => mm > qEnd).reduce((s, mm) => s + months[mm].fee[i], 0));
       if (quarter[2] + nextQ[2] < 50 && !hist.some((x) => (x.fee || 0) >= 50)) continue;
+      // 推荐主推 SKU（近 4 个月净出货最高）
       let topSku = "", topSkuName = "", topSo = -Infinity;
       for (const [sku, mv] of p.skus) {
         const s4 = win.reduce((x, mm) => x + (mv[mm] || 0), 0);
@@ -1286,7 +1287,8 @@ const KW: [RegExp, (h: string, m: Meta) => boolean][] = [
   [/新西兰/, (h) => h.includes("新西兰")],
   [/全脂/, (h) => h.includes("全脂")],
   [/甜奶粉/, (h) => h.includes("甜奶粉")],
-  [/炼奶/, (h) => h.includes("炼奶")],
+  [/炼奶|炼乳/, (h) => h.includes("炼奶") || h.includes("炼乳")],
+  [/淡奶油|奶油/, (h) => h.includes("淡奶油") || h.includes("奶油") || h.includes("cream")],
   [/支装/, (h) => h.includes("支装")],
   [/原味/, (h) => h.includes("原味")],
   [/乳铁/, (h) => h.includes("乳铁")],
@@ -1298,26 +1300,30 @@ const KW: [RegExp, (h: string, m: Meta) => boolean][] = [
   [/礼盒|双听/, (h) => h.includes("礼盒") || h.includes("双听")],
   [/单听/, (h) => !(h.includes("礼盒") || h.includes("双听"))],
 ];
+function pickRateSegs(raw: string, rate: number): string {
+  const segs = raw.split(/[；;]/).map((x) => x.trim()).filter((x) => x && !/客户组|不得|重复|按财务要求|备注/.test(x));
+  const subSegs = segs.flatMap((x) => x.split(/[、，,]/).map((y) => y.trim()).filter(Boolean));
+  const cand = subSegs.filter((x) => /\d+(?:\.\d+)?\s*%/.test(x)).length >= 2 ? subSegs : segs;
+  const rated = cand.filter((x) => /\d+(?:\.\d+)?\s*%/.test(x));
+  if (rated.length >= 2 && rate > 0) {
+    const hit = rated.filter((x) => [...x.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].some((m) => Math.abs(+m[1] / 100 - rate) < 0.0005));
+    if (hit.length) return hit.join("、");
+  }
+  return segs.join("、");
+}
 function remarkScope(remarks: string, pool: Meta[], rate = 0): { skus: Set<string> | null; text: string; group: string } {
   const r = String(remarks || "").replace(/&amp;/g, "&");
   const group = (r.match(/客户组[：:]\s*([^；;，,]+)/) || [])[1] || "";
   if (!r.trim() || REMARK_WHOLE.test(r)) return { skus: null, text: "", group };
-  // 取"Product："之后的产品段；多费率备注（中老年10%；N3 7%）只取与本计划费率一致的那段
+  // 取"Product："之后的产品段；多费率备注（如"A 10%、B 15%"或"中老年10%；N3 7%"）均按本计划费率只取对应段
   let t = "";
   const rest = (r.match(/(?:Product|产品)\s*[：:]\s*([\s\S]+)/i) || [])[1] || "";
   if (rest) {
-    const segs = rest.split(/[；;]/).map((x) => x.trim()).filter((x) => x && !/客户组|不得|重复|按财务要求|备注/.test(x));
-    const rated = segs.filter((x) => /\d+(?:\.\d+)?\s*%/.test(x));
-    let pick = segs;
-    if (rated.length >= 2 && rate > 0) {
-      const hit = rated.filter((x) => [...x.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].some((m) => Math.abs(+m[1] / 100 - rate) < 0.0005));
-      if (hit.length) pick = hit;
-    }
-    t = pick.join("、");
+    t = pickRateSegs(rest, rate);
   }
   if (!t) {
     const first = r.split(/[；;]/)[0];
-    if (/蓝|绿|系列|炼奶|新西兰|全脂|甜奶粉|乳铁|金装|中老年|N3/i.test(first)) t = first;
+    if (/蓝|绿|系列|炼奶|炼乳|奶油|新西兰|全脂|甜奶粉|乳铁|金装|中老年|N3/i.test(first)) t = pickRateSegs(first, rate);
   }
   if (!t) return { skus: null, text: "", group };
   t = t.replace(/[（(][^）)]*[）)]/g, "").replace(/[：:]?\s*\d+(?:\.\d+)?\s*%/g, "").trim();
@@ -1326,8 +1332,9 @@ function remarkScope(remarks: string, pool: Meta[], rate = 0): { skus: Set<strin
   let prev: ((h: string, m: Meta) => boolean)[] = [];
   for (const tok of tokens) {
     let preds = KW.filter(([re]) => re.test(tok)).map(([, f]) => f);
-    const sizes = [...tok.matchAll(/(\d+(?:\.\d+)?)\s*(kg|g)?/gi)].map((m) => `${m[1]}${(m[2] || "g").toLowerCase()}`).filter((v) => parseFloat(v) >= 1);
-    if (!preds.length && sizes.length) preds = prev;
+    const sizes = [...tok.matchAll(/(\d+(?:\.\d+)?)\s*(kg|ml|g|l)?/gi)].map((m) => `${m[1]}${(m[2] || "g").toLowerCase()}`).filter((v) => parseFloat(v) >= 1);
+    const stripped = tok.replace(/(\d+(?:\.\d+)?)\s*(kg|ml|g|l)?/gi, "").replace(/系列|产品|折扣|支持|单听|听|罐|盒|袋|支|包|瓶|装/g, "").trim();
+    if (!preds.length && sizes.length && !stripped) preds = prev;
     if (!preds.length) continue;
     prev = preds;
     const hay = (m: Meta) => `${m.name} ${m.s1} ${m.s2} ${m.s3} ${m.brand}`.toLowerCase();
