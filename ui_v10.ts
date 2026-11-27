@@ -457,7 +457,7 @@ const WBD=loadJSON(WB_DRAFT_KEY,null)||{
 };
 function saveWBP(){saveJSON(WB_PREF_KEY,WBP)}
 function saveWBD(){saveJSON(WB_DRAFT_KEY,WBD)}
-function colMonths(colId){return WBD.months[colId]&&WBD.months[colId].length?WBD.months[colId]:DEFAULT_MONTHS}
+function colMonths(colId){return Array.isArray(WBD.months[colId])?WBD.months[colId]:DEFAULT_MONTHS}
 
 // 计算某 (cp, col) 下所有可用渠道 & KAC 通道的金额明细
 function cellBreakdown(cpCode,col){
@@ -571,9 +571,9 @@ function renderWb(){
       (idx<cols.length-1?'<button data-mv="'+idx+'" data-d="1" title="右移">›</button>':'')+
       '<button data-rm="'+h(col.id)+'" title="移出本轮">×</button></span></div>'+
       '<div class="wb-ms">'+allM.map(mm=>{
-        const isH=mm<D.cur,on=ms.includes(mm);
-        return '<button class="'+(on?'on ':'')+(isH?'hist':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+(isH?'历史回溯(按100%实际)':'当月/未来(随保守/基准/乐观)')+'">'+(+mm.slice(4))+'月</button>';
-      }).join('')+'</div></th>';
+        const isH=mm<D.cur,on=ms.includes(mm),yr=mm.slice(0,4)!==D.cur.slice(0,4)?mm.slice(2,4)+'/':'';
+        return '<button class="'+(on?'on ':'')+(isH?'hist':'')+'" data-col="'+h(col.id)+'" data-mm="'+mm+'" title="'+(isH?'历史回溯(按100%实际)':'当月/未来(随保守/基准/乐观)')+'">'+yr+(+mm.slice(4))+'月</button>';
+      }).join('')+'<button data-mact="all" data-col="'+h(col.id)+'" style="border-style:dashed" title="一键全选所有月份">全选</button><button data-mact="cur" data-col="'+h(col.id)+'" style="border-style:dashed" title="仅选当月">当月</button><button data-mact="none" data-col="'+h(col.id)+'" style="border-style:dashed" title="一键全不选">清空</button></div></th>';
   });
   html+='</tr></thead><tbody>';
 
@@ -586,7 +586,7 @@ function renderWb(){
     const rem=poolTot-rowUsed;
     const remCls=rem<-0.5?'over':Math.abs(rem)<1&&poolTot>0?'done':'';
     const tag=cp.isDiscount?(cp.regional?'<span class="chip follow">区域自主</span>':cp.broad?'<span class="chip nodata">宽口径</span>':'<span class="chip ok">折扣</span>'):'<span class="chip" style="background:#f1e8ff;color:#6d28d9">陈列/上市</span>';
-    html+='<tr><td class="fix"><div><b>'+h(cp.desc)+'</b> '+tag+'</div><div class="sub">'+h(cp.code)+' · '+(BU[cp.bu]||cp.bu)+' · 止 '+cp.end.slice(5)+'</div></td>'+
+    html+='<tr><td class="fix"><div><b>'+h(cp.desc)+'</b> '+tag+'</div><div class="sub">'+h(cp.code)+' · '+(BU[cp.bu]||cp.bu)+' · '+(cp.start?cp.start.slice(5):'')+'~'+(cp.end?cp.end.slice(5):'')+'</div></td>'+
       '<td class="n">'+money(cp.balance)+'</td>'+
       '<td class="n"><input class="wb-in add" type="number" step="100" min="0" data-add="'+h(cp.code)+'" value="'+(addV||'')+'" placeholder="0"></td>'+
       '<td class="n wb-rem '+remCls+'">'+(Math.abs(rem)<1&&poolTot>0?'已分配':money(rem))+'</td>';
@@ -651,12 +651,19 @@ function renderWb(){
   el.querySelectorAll('button[data-rm]').forEach(b=>b.onclick=()=>{
     WBP.cols=WBP.cols.filter(c=>c.id!==b.dataset.rm);saveWBP();renderWb();
   });
-  el.querySelectorAll('.wb-ms button').forEach(b=>b.onclick=()=>{
+  el.querySelectorAll('.wb-ms button[data-mm]').forEach(b=>b.onclick=()=>{
     const cid=b.dataset.col,mm=b.dataset.mm;
     const curM=[...colMonths(cid)];
     const i=curM.indexOf(mm);
-    if(i>=0){if(curM.length>1)curM.splice(i,1)}else curM.push(mm);
+    if(i>=0)curM.splice(i,1);else curM.push(mm);
     curM.sort();WBD.months[cid]=curM;saveWBD();renderWb();
+  });
+  el.querySelectorAll('.wb-ms button[data-mact]').forEach(b=>b.onclick=()=>{
+    const cid=b.dataset.col,act=b.dataset.mact;
+    if(act==='all')WBD.months[cid]=[...HIST_MONTHS,...FUT_MONTHS];
+    else if(act==='cur')WBD.months[cid]=[D.cur];
+    else WBD.months[cid]=[];
+    saveWBD();renderWb();
   });
   el.querySelectorAll('input[data-add]').forEach(inp=>inp.onchange=()=>{
     const v=Math.max(0,Number(inp.value)||0);
